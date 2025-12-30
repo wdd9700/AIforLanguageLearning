@@ -1,0 +1,135 @@
+import { ipcMain, shell, app } from 'electron';
+import Store from 'electron-store';
+import log from 'electron-log';
+import fs from 'node:fs';
+import { WindowManager } from './window-manager.js';
+import { ServiceProbeManager } from './service-probe-manager.js';
+import { Config, SKey } from '../types.js';
+
+export class IpcManager {
+    private store: Store<Config>;
+    private windowManager: WindowManager;
+    private serviceProbeManager: ServiceProbeManager;
+
+    constructor(store: Store<Config>, windowManager: WindowManager, serviceProbeManager: ServiceProbeManager) {
+        this.store = store;
+        this.windowManager = windowManager;
+        this.serviceProbeManager = serviceProbeManager;
+    }
+
+    public registerHandlers() {
+        ipcMain.handle('config:get', () => {
+            const ports = this.store.get('ports') ?? { lmstudio: null, whisper: null, surya: null, cosy: null, app: 0 };
+            const legacyTheme = this.store.get('theme') ?? 'system';
+            const legacyBackendUrl = this.store.get('backendUrl') ?? 'localhost:8011';
+
+            const general = this.store.get('general') ?? { theme: legacyTheme, language: 'zh-CN', autoUpdate: true };
+            const audio = this.store.get('audio') ?? { inputDevice: 'default', outputDevice: 'default', volume: 80 };
+            const ai = this.store.get('ai') ?? { model: 'gpt-4-turbo', temperature: 0.7, voice: 'alloy' };
+            const backend = this.store.get('backend') ?? { url: 'http://localhost:8011', wsUrl: legacyBackendUrl };
+
+            // 返回给渲染进程的对象尽量对齐 AppConfig 结构；保留 ports 以兼容可能的使用方。
+            return {
+                ports,
+                general,
+                audio,
+                ai,
+                backend
+            };
+        });
+
+        ipcMain.handle('config:set', (_e, patch: Partial<Config>) => {
+            if (patch?.ports) {
+                const current = this.store.get('ports') ?? { lmstudio: null, whisper: null, surya: null, cosy: null, app: 0 };
+                this.store.set('ports', { ...current, ...patch.ports });
+            }
+
+            // 兼容旧字段
+            if ((patch as any)?.theme) {
+                this.store.set('theme', (patch as any).theme);
+            }
+            if ((patch as any)?.backendUrl) {
+                this.store.set('backendUrl', (patch as any).backendUrl);
+            }
+
+            // 新字段（AppConfig-ish）
+            if ((patch as any)?.general) {
+                const current = this.store.get('general') ?? { theme: 'system', language: 'zh-CN', autoUpdate: true };
+                this.store.set('general', { ...current, ...(patch as any).general });
+                // 同步 legacy theme
+                if ((patch as any).general?.theme) {
+                    this.store.set('theme', (patch as any).general.theme);
+                }
+            }
+            if ((patch as any)?.audio) {
+                const current = this.store.get('audio') ?? { inputDevice: 'default', outputDevice: 'default', volume: 80 };
+                this.store.set('audio', { ...current, ...(patch as any).audio });
+            }
+            if ((patch as any)?.ai) {
+                const current = this.store.get('ai') ?? { model: 'gpt-4-turbo', temperature: 0.7, voice: 'alloy' };
+                this.store.set('ai', { ...current, ...(patch as any).ai });
+            }
+            if ((patch as any)?.backend) {
+                const current = this.store.get('backend') ?? { url: 'http://localhost:8011', wsUrl: 'localhost:8011' };
+                this.store.set('backend', { ...current, ...(patch as any).backend });
+                // 同步 legacy backendUrl
+                if ((patch as any).backend?.wsUrl) {
+                    this.store.set('backendUrl', (patch as any).backend.wsUrl);
+                }
+            }
+
+            return {
+                ports: this.store.get('ports'),
+                general: this.store.get('general'),
+                audio: this.store.get('audio'),
+                ai: this.store.get('ai'),
+                backend: this.store.get('backend')
+            };
+        });
+
+        ipcMain.handle('service:start', (_e, key: SKey) => {
+            this.serviceProbeManager.updateState(key, { status: 'starting', message: 'Starting...' });
+            return true;
+        });
+
+        ipcMain.handle('service:stop', (_e, key: SKey) => {
+            this.serviceProbeManager.updateState(key, { status: 'stopped', message: 'Stopped by user' });
+            return true;
+        });
+
+        ipcMain.handle('service:probe', async () => {
+            await this.serviceProbeManager.probeOnce();
+            return true;
+        });
+
+        ipcMain.handle('config:open-path', async () => {
+            try {
+                const cfgPath = this.store.path;
+                if (cfgPath && fs.existsSync(cfgPath)) {
+                    shell.showItemInFolder(cfgPath);
+                    return { ok: true, path: cfgPath };
+                }
+                const dir = app.getPath('userData');
+                await shell.openPath(dir);
+                return { ok: true, path: dir };
+            } catch (e) {
+                log.error('config:open-path error', e);
+                return { ok: false, error: String(e) };
+            }
+        });
+
+        ipcMain.handle('service:state', async () => {
+            return this.serviceProbeManager.getState();
+        });
+
+        ipcMain.handle('overlay:show', async (_e, payload: { title: string; text: string }) => {
+            try {
+                this.windowManager.showOverlay(String(payload?.title || '提示'), String(payload?.text || ''));
+                return true;
+            } catch (e) {
+                log.error('overlay:show error', e);
+                return false;
+            }
+        });
+    }
+}

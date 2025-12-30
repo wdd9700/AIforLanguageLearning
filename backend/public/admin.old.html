@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MMLS 后端管理面板</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        body { background-color: #1a1a2e; color: #e2e8f0; }
+        .card { background-color: #16213e; border: 1px solid #2d3748; }
+        .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; }
+        .status-ok { background-color: #48bb78; }
+        .status-error { background-color: #f56565; }
+        .status-stopped { background-color: #a0aec0; }
+    </style>
+</head>
+<body class="p-6">
+    <div id="app" class="max-w-4xl mx-auto">
+        <header class="flex justify-between items-center mb-8">
+            <h1 class="text-2xl font-bold text-yellow-500">MMLS 后端服务管理</h1>
+            <div class="text-sm text-gray-400">
+                运行环境: {{ systemInfo.os }} | Node: {{ systemInfo.node }}
+            </div>
+        </header>
+
+        <!-- 服务状态监控 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <div class="card rounded-lg p-6 shadow-lg">
+                <h2 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">服务状态</h2>
+                <div v-if="loading" class="text-center py-4">加载中...</div>
+                <div v-else class="space-y-4">
+                    <div v-for="(status, name) in services" :key="name" class="flex justify-between items-center">
+                        <span class="capitalize">{{ name }}</span>
+                        <div class="flex items-center">
+                            <span :class="['status-dot mr-2', getStatusClass(status)]"></span>
+                            <span class="text-sm">{{ status }}</span>
+                        </div>
+                    </div>
+                </div>
+                <button @click="fetchStatus" class="mt-4 w-full py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm">刷新状态</button>
+            </div>
+
+            <div class="card rounded-lg p-6 shadow-lg">
+                <h2 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">快速操作</h2>
+                <div class="grid grid-cols-2 gap-4">
+                    <button @click="restartService('asr')" class="py-2 px-4 bg-gray-700 hover:bg-gray-600 rounded border border-gray-600">重启 ASR</button>
+                    <button @click="restartService('tts')" class="py-2 px-4 bg-gray-700 hover:bg-gray-600 rounded border border-gray-600">重启 TTS</button>
+                    <button @click="showLLMModels" class="py-2 px-4 bg-blue-700 hover:bg-blue-600 rounded border border-blue-600">管理 LLM 模型</button>
+                    <button @click="openLogs" class="py-2 px-4 bg-gray-700 hover:bg-gray-600 rounded border border-gray-600">查看日志</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 配置管理 -->
+        <div class="card rounded-lg p-6 shadow-lg mb-8">
+            <h2 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">模型与端口配置</h2>
+            <form @submit.prevent="saveConfig" class="space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">LLM API Endpoint</label>
+                        <input v-model="config.llmEndpoint" type="text" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white focus:border-yellow-500 focus:outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Backend Port</label>
+                        <input v-model="config.port" type="number" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white focus:border-yellow-500 focus:outline-none">
+                    </div>
+                </div>
+
+                <div class="border-t border-gray-700 pt-4 mt-4">
+                    <h3 class="text-lg font-medium mb-3 text-yellow-500">模型选择 (LM Studio ID)</h3>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">对话模型 (Conversation)</label>
+                            <input v-model="config.models.conversation" type="text" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white focus:border-yellow-500 focus:outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">词汇/OCR 模型 (Vocabulary)</label>
+                            <input v-model="config.models.vocabulary" type="text" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white focus:border-yellow-500 focus:outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">分析模型 (Analysis)</label>
+                            <input v-model="config.models.analysis" type="text" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white focus:border-yellow-500 focus:outline-none">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="border-t border-gray-700 pt-4 mt-4">
+                    <h3 class="text-lg font-medium mb-3 text-yellow-500">System Prompts 配置</h3>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">词汇查询 (Vocabulary)</label>
+                            <textarea v-model="config.prompts.vocabulary" rows="3" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"></textarea>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">作文批改 (Essay)</label>
+                            <textarea v-model="config.prompts.essay" rows="3" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"></textarea>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">语音对话 (Dialogue Default)</label>
+                            <textarea v-model="config.prompts.dialogue" rows="3" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"></textarea>
+                        </div>
+                        
+                        <!-- Scenarios -->
+                        <div class="pl-4 border-l-2 border-gray-700 space-y-3">
+                            <h4 class="text-sm font-medium text-gray-300">对话场景 (Scenarios)</h4>
+                            <div>
+                                <label class="block text-xs text-gray-500 mb-1">日常闲聊 (Daily)</label>
+                                <textarea v-model="config.prompts.scenarios.daily" rows="2" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:border-yellow-500 focus:outline-none"></textarea>
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-500 mb-1">旅游出行 (Travel)</label>
+                                <textarea v-model="config.prompts.scenarios.travel" rows="2" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:border-yellow-500 focus:outline-none"></textarea>
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-500 mb-1">商务职场 (Business)</label>
+                                <textarea v-model="config.prompts.scenarios.business" rows="2" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:border-yellow-500 focus:outline-none"></textarea>
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-500 mb-1">学术讨论 (Academic)</label>
+                                <textarea v-model="config.prompts.scenarios.academic" rows="2" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:border-yellow-500 focus:outline-none"></textarea>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">学习分析 (Analysis)</label>
+                            <textarea v-model="config.prompts.analysis" rows="3" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex justify-end pt-4">
+                    <button type="submit" class="px-6 py-2 bg-yellow-600 hover:bg-yellow-500 text-white rounded font-semibold transition-colors">保存配置</button>
+                </div>
+            </form>
+        </div>
+        
+        <!-- LLM 模型管理面板 (弹出层) -->
+        <div v-if="showModelPanel" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="showModelPanel = false">
+            <div class="card rounded-lg p-6 shadow-2xl max-w-4xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+                <div class="flex justify-between items-center mb-4 border-b border-gray-700 pb-3">
+                    <h2 class="text-2xl font-semibold text-yellow-500">LLM 模型管理</h2>
+                    <button @click="showModelPanel = false" class="text-gray-400 hover:text-white text-2xl">&times;</button>
+                </div>
+                
+                <!-- 加载新模型 -->
+                <div class="mb-6 p-4 bg-gray-800 rounded">
+                    <h3 class="text-lg font-medium mb-3 text-blue-400">加载新模型</h3>
+                    <div class="flex gap-2">
+                        <input 
+                            v-model="newModelPath" 
+                            type="text" 
+                            placeholder="模型路径，如: qwen/qwen3-30b-a3b-2507"
+                            class="flex-1 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"
+                        >
+                        <input 
+                            v-model="newModelArgs" 
+                            type="text" 
+                            placeholder="额外参数 (可选)，如: -c 8192"
+                            class="w-48 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"
+                        >
+                        <button 
+                            @click="loadModel" 
+                            :disabled="!newModelPath || modelLoading"
+                            class="px-6 py-2 bg-green-600 hover:bg-green-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded font-semibold transition-colors"
+                        >
+                            {{ modelLoading ? '加载中...' : '加载' }}
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- 已加载模型列表 -->
+                <div class="mb-6">
+                    <div class="flex justify-between items-center mb-3">
+                        <h3 class="text-lg font-medium text-green-400">已加载模型</h3>
+                        <button @click="refreshModels" class="text-sm px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">
+                            {{ modelsLoading ? '刷新中...' : '🔄 刷新' }}
+                        </button>
+                    </div>
+                    <div v-if="modelsLoading" class="text-center py-4 text-gray-400">加载中...</div>
+                    <div v-else-if="loadedModels.length === 0" class="text-center py-4 text-gray-400">
+                        暂无已加载的模型
+                    </div>
+                    <div v-else class="space-y-2">
+                        <div 
+                            v-for="model in loadedModels" 
+                            :key="model.modelKey || model.identifier || model.id"
+                            class="flex justify-between items-center p-3 bg-gray-800 rounded border border-green-900"
+                        >
+                            <div class="flex-1">
+                                <div class="font-medium text-white">{{ model.displayName || model.modelKey || model.identifier || model.id }}</div>
+                                <div class="text-xs text-gray-400 mt-1">
+                                    <span v-if="model.path">{{ model.path }}</span>
+                                    <span v-if="model.sizeBytes" class="ml-2">{{ formatSize(model.sizeBytes) }}</span>
+                                    <span v-if="model.quantization" class="ml-2">{{ model.quantization.name }}</span>
+                                </div>
+                            </div>
+                            <button 
+                                @click="unloadModel(model.modelKey || model.identifier || model.id)" 
+                                :disabled="modelLoading"
+                                class="px-4 py-1 bg-red-600 hover:bg-red-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded text-sm transition-colors"
+                            >
+                                卸载
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 可用模型列表 -->
+                <div>
+                    <h3 class="text-lg font-medium mb-3 text-gray-400">可用但未加载的模型</h3>
+                    <div v-if="availableModels.length === 0" class="text-center py-4 text-gray-400">
+                        所有模型已加载或暂无可用模型
+                    </div>
+                    <div v-else class="space-y-2 max-h-60 overflow-y-auto">
+                        <div 
+                            v-for="model in availableModels" 
+                            :key="model.modelKey || model.identifier || model.id"
+                            class="flex justify-between items-center p-3 bg-gray-800 rounded border border-gray-700"
+                        >
+                            <div class="flex-1">
+                                <div class="font-medium text-gray-300">{{ model.displayName || model.modelKey || model.identifier || model.id }}</div>
+                                <div class="text-xs text-gray-500 mt-1">
+                                    <span v-if="model.path">{{ model.path }}</span>
+                                    <span v-if="model.sizeBytes" class="ml-2">{{ formatSize(model.sizeBytes) }}</span>
+                                    <span v-if="model.quantization" class="ml-2">{{ model.quantization.name }}</span>
+                                </div>
+                            </div>
+                            <button 
+                                @click="loadModelById(model.modelKey || model.identifier || model.id)" 
+                                :disabled="modelLoading"
+                                class="px-4 py-1 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded text-sm transition-colors"
+                            >
+                                加载
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="text-center text-gray-500 text-sm">
+            MMLS Backend Admin Panel &copy; 2025
+        </div>
+    </div>
+
+    <script>
+        new Vue({
+            el: '#app',
+            data: {
+                loading: true,
+                systemInfo: { os: 'Windows', node: 'v18.x' },
+                services: {
+                    asr: 'unknown',
+                    tts: 'unknown',
+                    llm: 'unknown',
+                    ocr: 'unknown'
+                },
+                config: {
+                    port: 3000,
+                    llmEndpoint: 'http://localhost:1234/v1/chat/completions',
+                    models: {
+                        conversation: '',
+                        vocabulary: '',
+                        analysis: ''
+                    }
+                },
+                // 模型管理相关
+                showModelPanel: false,
+                modelsLoading: false,
+                modelLoading: false,
+                loadedModels: [],
+                availableModels: [],
+                newModelPath: '',
+                newModelArgs: ''
+            },
+            mounted() {
+                // 初次加载使用缓存数据（快速显示）
+                this.fetchStatusCached();
+                // 然后在后台获取最新配置
+                this.fetchConfig();
+            },
+            methods: {
+                async fetchStatusCached() {
+                    // 获取缓存的状态（用于初次页面加载，速度更快）
+                    this.loading = true;
+                    try {
+                        const res = await axios.get('/api/system/health');
+                        if (res.data.success) {
+                            const s = res.data.data.services || {};
+                            this.services = {
+                                asr: s.asr?.status || 'stopped',
+                                tts: s.tts?.status || 'stopped',
+                                llm: s.llm?.status || 'unknown',
+                                ocr: s.ocr?.status || 'stopped'
+                            };
+                        }
+                    } catch (e) {
+                        console.error(e);
+                        alert('无法连接后端服务');
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                async fetchStatus() {
+                    this.loading = true;
+                    try {
+                        // 添加 refresh=true 参数以强制刷新服务状态
+                        const res = await axios.get('/api/system/health?refresh=true');
+                        if (res.data.success) {
+                            // Mock mapping for now, real implementation depends on backend response structure
+                            const s = res.data.data.services || {};
+                            this.services = {
+                                asr: s.asr?.status || 'stopped',
+                                tts: s.tts?.status || 'stopped',
+                                llm: s.llm?.status || 'unknown',
+                                ocr: s.ocr?.status || 'stopped'
+                            };
+                        }
+                    } catch (e) {
+                        console.error(e);
+                        alert('无法连接后端服务');
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                async fetchConfig() {
+                    try {
+                        const res = await axios.get('/api/system/config');
+                        if (res.data.success) {
+                            this.config = res.data.data;
+                            // Ensure prompts object exists
+                            if (!this.config.prompts) {
+                                this.$set(this.config, 'prompts', {
+                                    vocabulary: '',
+                                    essay: '',
+                                    dialogue: '',
+                                    analysis: '',
+                                    scenarios: { daily: '', travel: '', business: '', academic: '' }
+                                });
+                            } else if (!this.config.prompts.scenarios) {
+                                this.$set(this.config.prompts, 'scenarios', {
+                                    daily: '',
+                                    travel: '',
+                                    business: '',
+                                    academic: ''
+                                });
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Failed to fetch config', e);
+                    }
+                },
+                async saveConfig() {
+                    try {
+                        const res = await axios.post('/api/system/config', this.config);
+                        if (res.data.success) {
+                            alert('配置已保存，部分更改可能需要重启服务生效');
+                        }
+                    } catch (e) {
+                        alert('保存失败: ' + e.message);
+                    }
+                },
+                async restartService(service) {
+                    if(!confirm(`确定要重启 ${service} 服务吗?`)) return;
+                    try {
+                        await axios.post(`/api/system/restart/${service}`);
+                        alert('重启指令已发送');
+                        setTimeout(this.fetchStatus, 2000);
+                    } catch (e) {
+                        alert('操作失败');
+                    }
+                },
+                getStatusClass(status) {
+                    if (status === 'running' || status === 'ok') return 'status-ok';
+                    if (status === 'error') return 'status-error';
+                    return 'status-stopped';
+                },
+                openLogs() {
+                    window.open('/api/system/logs', '_blank');
+                },
+                // 模型管理方法
+                async showLLMModels() {
+                    this.showModelPanel = true;
+                    await this.refreshModels();
+                },
+                async refreshModels() {
+                    this.modelsLoading = true;
+                    try {
+                        const res = await axios.get('/api/system/llm/models');
+                        if (res.data.success) {
+                            this.loadedModels = res.data.data.loaded || [];
+                            this.availableModels = res.data.data.available || [];
+                        }
+                    } catch (e) {
+                        console.error('Failed to fetch models', e);
+                        alert('获取模型列表失败');
+                    } finally {
+                        this.modelsLoading = false;
+                    }
+                },
+                async loadModel() {
+                    if (!this.newModelPath) return;
+                    
+                    this.modelLoading = true;
+                    try {
+                        const res = await axios.post('/api/system/llm/load', {
+                            modelPath: this.newModelPath,
+                            extraArgs: this.newModelArgs || undefined
+                        });
+                        
+                        if (res.data.success) {
+                            alert(res.data.message);
+                            this.newModelPath = '';
+                            this.newModelArgs = '';
+                            await this.refreshModels();
+                            await this.fetchStatus();
+                        } else {
+                            alert('加载失败: ' + (res.data.error || '未知错误'));
+                        }
+                    } catch (e) {
+                        alert('加载失败: ' + e.message);
+                    } finally {
+                        this.modelLoading = false;
+                    }
+                },
+                async loadModelById(identifier) {
+                    if (!confirm(`确定要加载模型 ${identifier} 吗？`)) return;
+                    
+                    this.modelLoading = true;
+                    try {
+                        const res = await axios.post('/api/system/llm/load', {
+                            modelPath: identifier
+                        });
+                        
+                        if (res.data.success) {
+                            alert(res.data.message);
+                            await this.refreshModels();
+                            await this.fetchStatus();
+                        } else {
+                            alert('加载失败: ' + (res.data.error || '未知错误'));
+                        }
+                    } catch (e) {
+                        alert('加载失败: ' + e.message);
+                    } finally {
+                        this.modelLoading = false;
+                    }
+                },
+                async unloadModel(identifier) {
+                    if (!confirm(`确定要卸载模型 ${identifier} 吗？`)) return;
+                    
+                    this.modelLoading = true;
+                    try {
+                        const res = await axios.post('/api/system/llm/unload', {
+                            identifier: identifier
+                        });
+                        
+                        if (res.data.success) {
+                            alert(res.data.message);
+                            await this.refreshModels();
+                            await this.fetchStatus();
+                        } else {
+                            alert('卸载失败: ' + (res.data.error || '未知错误'));
+                        }
+                    } catch (e) {
+                        alert('卸载失败: ' + e.message);
+                    } finally {
+                        this.modelLoading = false;
+                    }
+                },
+                formatSize(bytes) {
+                    if (!bytes) return '';
+                    const gb = bytes / (1024 * 1024 * 1024);
+                    return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+                }
+            }
+        });
+    </script>
+</body>
+</html>

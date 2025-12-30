@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "outDir": "dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node", "jest"],
+    "baseUrl": ".",
+    "paths": {
+      "@softbus/*": ["softbus/*"],
+      "@orchestration/*": ["orchestration/*"]
+    },
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "include": ["src/**/*", "softbus/**/*", "orchestration/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.spec.ts"]
+}
