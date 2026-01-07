@@ -41,6 +41,10 @@ export const useVoiceStore = defineStore('voice', () => {
   const currentRequestId = ref<string | null>(null);
   const wsV1PreferBinary = ref(true);
 
+  // Ensure we only register one WS message handler.
+  let wsUnsubscribe: (() => void) | null = null;
+  let hasInitialized = false;
+
   // ============ 核心方法 ============
 
   /**
@@ -49,7 +53,9 @@ export const useVoiceStore = defineStore('voice', () => {
    */
   const init = () => {
     // 注册一次消息处理器（重复注册会导致消息被处理多次）
-    voiceSocket.onMessage(handleMessage);
+    if (hasInitialized) return;
+    hasInitialized = true;
+    wsUnsubscribe = voiceSocket.onMessage(handleMessage);
     void ensureConnectedWsV1();
   };
 
@@ -160,6 +166,8 @@ export const useVoiceStore = defineStore('voice', () => {
         case 'TASK_FINISHED': {
           if (rid && rid === currentRequestId.value) {
             isProcessing.value = false;
+            // We don't have a precise audio-ended callback; best-effort clear UI state when task completes.
+            isSpeaking.value = false;
             if ((payload?.ok ?? true) === false) {
               setStatus('任务已结束（取消/失败）', 'error');
             } else if (payload?.asr_only) {
@@ -238,6 +246,8 @@ export const useVoiceStore = defineStore('voice', () => {
    * @param config - 会话配置对象
    */
   const startCustomSession = async (config: { systemPrompt: string; openingText: string; openingAudio: string; language: string }) => {
+    // Ensure WS handler is registered before any server events arrive.
+    init();
     if (!isConnected.value) {
       await ensureConnectedWsV1();
     }
@@ -298,6 +308,8 @@ export const useVoiceStore = defineStore('voice', () => {
    * 启动音频管理器并开始流式传输音频数据。
    */
   const startRecording = async () => {
+    // Ensure WS handler is registered before any server events arrive.
+    init();
     if (!isConnected.value) {
       await ensureConnectedWsV1();
       return;

@@ -103,8 +103,8 @@ const handleRewrite = () => {
 // --- 生命周期钩子 ---
 
 onMounted(() => {
-  // 组件挂载时不自动初始化，等待用户完成流程
-  // voiceStore.init(); 
+  // 预先初始化语音服务（幂等）：注册 WS 消息处理器并尝试建立连接。
+  voiceStore.init();
 });
 
 onUnmounted(() => {
