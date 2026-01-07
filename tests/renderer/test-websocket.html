@@ -238,7 +238,7 @@
             
             <div class="control-group">
                 <label>服务器地址</label>
-                <input type="text" id="wsUrl" value="ws://localhost:3000/stream" />
+                <input type="text" id="wsUrl" value="ws://127.0.0.1:8012/ws/v1?session_id=debug&conversation_id=debug_conv" />
             </div>
             
             <div class="button-group">
@@ -254,8 +254,10 @@
             <div class="control-group">
                 <label>消息类型</label>
                 <select id="messageType" onchange="updateMessageTemplate()">
-                    <option value="ping">Ping 心跳测试</option>
-                    <option value="asr_test">ASR 测试（测试音频）</option>
+                    <option value="ws_v1_context_set">ws-v1: CONTEXT_SET</option>
+                    <option value="ws_v1_audio_start">ws-v1: AUDIO_START（不发音频）</option>
+                    <option value="ws_v1_audio_end">ws-v1: AUDIO_END</option>
+                    <option value="ws_v1_min_voice">ws-v1: 一键最小语音回包（START+END）</option>
                     <option value="custom">自定义 JSON</option>
                 </select>
             </div>
@@ -269,7 +271,8 @@
             
             <div class="button-group">
                 <button class="success" onclick="sendMessage()">发送</button>
-                <button class="secondary" onclick="sendPing()">发送 Ping</button>
+                <button class="secondary" onclick="sendPing()">发送 ECHO 测试</button>
+                <button class="success" onclick="sendMinVoiceRoundtrip()">一键最小语音回包</button>
             </div>
             
             <hr style="border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 20px 0;">
@@ -399,24 +402,118 @@
         function updateMessageTemplate() {
             const type = document.getElementById('messageType').value;
             const content = document.getElementById('messageContent');
+
+            const reqId = ensureRequestId();
             
             switch (type) {
-                case 'ping':
-                    content.value = JSON.stringify({ type: 'ping' }, null, 2);
-                    break;
-                case 'asr_test':
+                case 'ws_v1_context_set':
                     content.value = JSON.stringify({
-                        type: 'asr',
-                        data: {
-                            audio: '<base64_audio_data>',
-                            language: 'zh-CN'
+                        type: 'CONTEXT_SET',
+                        request_id: `ctx_${Date.now()}`,
+                        payload: {
+                            language: 'en',
+                            system_prompt: 'You are a helpful language tutor. Reply in Chinese, keep it concise.'
                         }
+                    }, null, 2);
+                    break;
+                case 'ws_v1_audio_start':
+                    content.value = JSON.stringify({
+                        type: 'AUDIO_START',
+                        request_id: reqId,
+                        payload: {
+                            sample_rate: 16000,
+                            channels: 1,
+                            encoding: 'pcm_s16le',
+                            vad_enabled: false
+                        }
+                    }, null, 2);
+                    break;
+                case 'ws_v1_audio_end':
+                    content.value = JSON.stringify({
+                        type: 'AUDIO_END',
+                        request_id: reqId,
+                        payload: {}
+                    }, null, 2);
+                    break;
+                case 'ws_v1_min_voice':
+                    content.value = JSON.stringify({
+                        note: '使用“一键最小语音回包”按钮会自动发送 CONTEXT_SET + AUDIO_START + AUDIO_END。',
+                        request_id: reqId
                     }, null, 2);
                     break;
                 case 'custom':
                     content.value = '{\n  \n}';
                     break;
             }
+        }
+
+        function ensureRequestId() {
+            // Persist a request_id across template switches.
+            if (!window.__wsV1ReqId) {
+                window.__wsV1ReqId = `req_${Math.random().toString(16).slice(2)}_${Date.now()}`;
+            }
+            return window.__wsV1ReqId;
+        }
+
+        function sendJson(obj) {
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                log('✗ 未连接到服务器', 'error');
+                stats.errors++;
+                updateStats();
+                return false;
+            }
+
+            const message = JSON.stringify(obj);
+            websocket.send(message);
+            stats.sent++;
+            log(`发送: ${message.substring(0, 200)}...`, 'success');
+            updateStats();
+            return true;
+        }
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function sendMinVoiceRoundtrip() {
+            const reqId = ensureRequestId();
+
+            // 1) Set context (optional but useful for debugging prompts)
+            if (!sendJson({
+                type: 'CONTEXT_SET',
+                request_id: `ctx_${Date.now()}`,
+                payload: {
+                    language: 'en',
+                    system_prompt: 'You are a helpful language tutor. Reply in Chinese, keep it concise.'
+                }
+            })) {
+                return;
+            }
+
+            await sleep(50);
+
+            // 2) Start a voice request (without audio chunks)
+            if (!sendJson({
+                type: 'AUDIO_START',
+                request_id: reqId,
+                payload: {
+                    sample_rate: 16000,
+                    channels: 1,
+                    encoding: 'pcm_s16le',
+                    vad_enabled: false
+                }
+            })) {
+                return;
+            }
+
+            await sleep(50);
+
+            // 3) End immediately. Backend should still produce ASR_FINAL + LLM_RESULT + TTS_* + TASK_FINISHED.
+            sendJson({
+                type: 'AUDIO_END',
+                request_id: reqId,
+                payload: {}
+            });
         }
         
         function sendMessage() {
@@ -429,8 +526,8 @@
             
             try {
                 const message = document.getElementById('messageContent').value;
-                JSON.parse(message); // 验证 JSON
-                websocket.send(message);
+                const obj = JSON.parse(message); // 验证 JSON
+                websocket.send(JSON.stringify(obj));
                 stats.sent++;
                 log(`发送: ${message.substring(0, 100)}...`, 'success');
                 updateStats();
@@ -449,10 +546,10 @@
                 return;
             }
             
-            const ping = JSON.stringify({ type: 'ping' });
+            const ping = JSON.stringify({ type: 'PING', payload: { ts: Date.now() } });
             websocket.send(ping);
             stats.sent++;
-            log('发送 Ping', 'success');
+            log('发送 ECHO 测试（后端会回 ECHO）', 'success');
             updateStats();
         }
         
@@ -465,6 +562,7 @@
         document.addEventListener('DOMContentLoaded', function() {
             log('WebSocket 测试工具已加载', 'info');
             updateStats();
+            updateMessageTemplate();
         });
         
         // 页面关闭时断开连接

@@ -63,7 +63,14 @@ export const useVoiceStore = defineStore('voice', () => {
     if (isConnected.value) return;
     try {
       const cfg: any = await ConfigService.getConfig();
-      const backendUrl = String(cfg?.backend?.wsUrl || cfg?.backendUrl || 'localhost:8012');
+      let backendUrl = String(cfg?.backend?.wsUrl || cfg?.backendUrl || 'localhost:8012');
+      // Guard: avoid accidentally connecting to the frontend dev server (e.g. localhost:8000).
+      try {
+        const host = String(window?.location?.host || '');
+        if (backendUrl === host || /:(8000)\b/.test(backendUrl)) {
+          backendUrl = 'localhost:8012';
+        }
+      } catch {}
       voiceSocket.connectWsV1({
         backendUrl,
         sessionId: sessionId.value,
@@ -72,6 +79,15 @@ export const useVoiceStore = defineStore('voice', () => {
     } catch (e) {
       console.warn('ws-v1 connect failed, falling back to legacy connect', e);
       voiceSocket.connect();
+    }
+  };
+
+  const waitForConnected = async (timeoutMs: number = 5000) => {
+    if (isConnected.value) return;
+    const start = Date.now();
+    while (!isConnected.value) {
+      if (Date.now() - start > timeoutMs) throw new Error('WebSocket connect timeout');
+      await new Promise((r) => setTimeout(r, 50));
     }
   };
 
@@ -138,7 +154,16 @@ export const useVoiceStore = defineStore('voice', () => {
           return;
         }
         case 'LLM_RESULT': {
-          // In ws-v1 we already accumulated tokens; keep status reasonable.
+          // Fallback: if server didn't stream tokens, use the final markdown/text.
+          const markdown = String(payload?.markdown || payload?.text || '');
+          if (markdown) {
+            const lastMsg = currentDialogue.value[currentDialogue.value.length - 1];
+            if (lastMsg && lastMsg.role === 'assistant' && !lastMsg.content) {
+              lastMsg.content = markdown;
+            } else if (!lastMsg || lastMsg.role !== 'assistant') {
+              addMessage('assistant', markdown);
+            }
+          }
           setStatus('正在合成语音...', 'processing');
           isProcessing.value = true;
           return;
@@ -264,7 +289,13 @@ export const useVoiceStore = defineStore('voice', () => {
       isSpeaking.value = true;
       setStatus('正在回复...', 'speaking');
       // openingAudio uses base64(wav bytes)
-      void audioManager.playWavChunk(config.openingAudio);
+      void audioManager.playWavChunk(config.openingAudio).finally(() => {
+        // 这是“开场白”本地播放，不会收到 TASK_FINISHED；需要自行复位。
+        if (!isRecording.value && !isProcessing.value) {
+          isSpeaking.value = false;
+          setStatus('就绪', 'success');
+        }
+      });
     }
 
     // ws-v1: 写入对话上下文（system prompt），供后端在 LLM 生成时使用。
@@ -301,6 +332,12 @@ export const useVoiceStore = defineStore('voice', () => {
     }
     currentDialogue.value = [];
     setStatus('就绪', 'success');
+
+    if (wsUnsubscribe) {
+      wsUnsubscribe();
+      wsUnsubscribe = null;
+      hasInitialized = false;
+    }
   };
 
   /**
@@ -312,7 +349,7 @@ export const useVoiceStore = defineStore('voice', () => {
     init();
     if (!isConnected.value) {
       await ensureConnectedWsV1();
-      return;
+      await waitForConnected(6000);
     }
 
     try {
@@ -361,7 +398,8 @@ export const useVoiceStore = defineStore('voice', () => {
       // legacy fallback
       voiceSocket.send({ type: 'stop' });
     }
-    setStatus('就绪', 'success');
+    isProcessing.value = true;
+    setStatus('处理中...', 'processing');
   };
 
   /**

@@ -205,17 +205,39 @@ async def ws_v1(ws: WebSocket) -> None:
         pending_binary_chunk_for: str | None = None
         asr_transcriber = None
         if settings.enable_asr:
-            if settings.asr_backend == "faster-whisper":
+            preferred = str(settings.asr_backend or "").strip() or "faster-whisper"
+
+            if preferred == "faster-whisper":
                 asr_transcriber = try_create_faster_whisper_transcriber(
                     model_name=settings.asr_model,
                     device=settings.asr_device,
                     compute_type=settings.asr_compute_type,
                 )
-            elif settings.asr_backend == "openai-whisper":
+                if asr_transcriber is None:
+                    # fallback
+                    asr_transcriber = try_create_openai_whisper_transcriber(
+                        model_name=settings.asr_model,
+                        device=settings.asr_device,
+                    )
+            elif preferred == "openai-whisper":
                 asr_transcriber = try_create_openai_whisper_transcriber(
                     model_name=settings.asr_model,
                     device=settings.asr_device,
                 )
+                if asr_transcriber is None:
+                    # fallback
+                    asr_transcriber = try_create_faster_whisper_transcriber(
+                        model_name=settings.asr_model,
+                        device=settings.asr_device,
+                        compute_type=settings.asr_compute_type,
+                    )
+
+            # If ASR is enabled but no backend is available, provide a clear degraded transcriber.
+            if asr_transcriber is None:
+                def _asr_unavailable(_audio: bytes, _cfg: "VoiceStreamConfig") -> str:
+                    return "（ASR 已启用，但当前 Python 环境未安装 ASR 后端依赖：请使用 conda env 'asr' 启动，或安装 faster-whisper/openai-whisper）"
+
+                asr_transcriber = _asr_unavailable
 
         async def abort_voice_request(req_id: str, *, reason: str) -> None:
             # Idempotent: abort only once.

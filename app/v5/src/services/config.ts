@@ -106,6 +106,9 @@ export const ConfigService = {
       url = url.replace(/\/$/, '');
       url = url.replace('http://localhost:8011', 'http://localhost:8012');
       url = url.replace('http://127.0.0.1:8011', 'http://127.0.0.1:8012');
+      // Common misconfig: pointing backend to the Vite dev server port.
+      url = url.replace('http://localhost:8000', 'http://localhost:8012');
+      url = url.replace('http://127.0.0.1:8000', 'http://127.0.0.1:8012');
       next.backend.url = url;
 
       // Normalize backend.wsUrl (host:port)
@@ -113,6 +116,9 @@ export const ConfigService = {
       let wsUrl = rawWs.replace(/^wss?:\/\//, '');
       wsUrl = wsUrl.replace('localhost:8011', 'localhost:8012');
       wsUrl = wsUrl.replace('127.0.0.1:8011', '127.0.0.1:8012');
+      // Common misconfig: pointing wsUrl to the Vite dev server port.
+      wsUrl = wsUrl.replace('localhost:8000', 'localhost:8012');
+      wsUrl = wsUrl.replace('127.0.0.1:8000', '127.0.0.1:8012');
       next.backend.wsUrl = wsUrl;
 
       return next;

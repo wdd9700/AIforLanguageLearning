@@ -172,7 +172,7 @@ export class AudioManager {
   /**
    * 播放 WAV 音频分片（后端 ws-v1 `TTS_CHUNK` 发送的是 wav bytes 的 base64）。
    */
-  async playWavChunk(base64Wav: string) {
+  async playWavChunk(base64Wav: string): Promise<void> {
     if (!this.playbackContext) return;
 
     if (this.playbackContext.state === 'suspended') {
@@ -200,6 +200,10 @@ export class AudioManager {
       source.start(this.nextStartTime);
       this.nextStartTime += audioBuffer.duration;
       this.activeSource = source;
+
+      await new Promise<void>((resolve) => {
+        source.onended = () => resolve();
+      });
     } catch (e) {
       console.error('播放 WAV 分片失败:', e);
     }

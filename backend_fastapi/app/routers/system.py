@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import sys
 from typing import Any
 
 from fastapi import APIRouter
@@ -18,6 +20,7 @@ class SystemConfig(BaseModel):
     ocr: dict[str, Any]
     tts: dict[str, Any]
     asr: dict[str, Any]
+    python: dict[str, Any]
 
 
 class SystemConfigResponse(BaseModel):
@@ -28,6 +31,16 @@ class SystemConfigResponse(BaseModel):
 @router.get("/config", response_model=SystemConfigResponse)
 async def get_config() -> SystemConfigResponse:
     # P0：返回前端期待的结构化字段；目前不做持久化配置面板，只做运行态回显。
+    def _has_module(module_name: str) -> bool:
+        try:
+            importlib.import_module(module_name)
+            return True
+        except Exception:
+            return False
+
+    has_faster_whisper = _has_module("faster_whisper")
+    has_openai_whisper = _has_module("whisper")
+
     cfg = SystemConfig(
         port=int(settings.port),
         llmEndpoint=str(settings.llm_base_url),
@@ -41,6 +54,15 @@ async def get_config() -> SystemConfigResponse:
             "model": str(settings.asr_model),
             "device": str(settings.asr_device),
             "computeType": str(settings.asr_compute_type),
+            "runtime": {
+                "available": bool(has_faster_whisper or has_openai_whisper),
+                "hasFasterWhisper": bool(has_faster_whisper),
+                "hasOpenAIWhisper": bool(has_openai_whisper),
+            },
+        },
+        python={
+            "executable": str(sys.executable),
+            "version": str(sys.version).split(" ")[0],
         },
     )
     return SystemConfigResponse(success=True, data=cfg)

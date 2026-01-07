@@ -19,7 +19,7 @@ export const EssayService = {
    * @throws {Error} 如果批改失败
    */
   async correct(text: string, language: string = 'english'): Promise<EssayCorrectionResult> {
-    const response = await api.post('/api/essay/correct', { text, language });
+    const response = await api.post('/api/essay/correct', { text, language }, { timeout: 60000 });
     const result = response as unknown as { success: boolean; data: EssayCorrectionResult; error?: string };
     
     if (result.success) {
@@ -42,7 +42,7 @@ export const EssayService = {
     // 预处理：去除 Base64 前缀
     const cleanBase64 = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
 
-    const response = await api.post('/api/essay/correct', { image: cleanBase64, language });
+    const response = await api.post('/api/essay/correct', { image: cleanBase64, language }, { timeout: 60000 });
     const result = response as unknown as { success: boolean; data: EssayCorrectionResult; error?: string };
 
     if (result.success) {

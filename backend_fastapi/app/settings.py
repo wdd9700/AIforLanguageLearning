@@ -35,9 +35,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AIFL_DATABASE_URL", "DATABASE_URL"),
     )
 
-    # Voice (P0): 默认关闭，避免在无模型环境下启动就加载 ASR
+    # Voice (P0): 默认开启；若运行环境缺少 ASR 依赖，会降级为“ASR 后端不可用”的提示文本。
     enable_asr: bool = Field(
-        default=False, validation_alias=AliasChoices("AIFL_ENABLE_ASR", "ENABLE_ASR")
+        default=True, validation_alias=AliasChoices("AIFL_ENABLE_ASR", "ENABLE_ASR")
     )
     asr_backend: str = Field(
         default="faster-whisper",

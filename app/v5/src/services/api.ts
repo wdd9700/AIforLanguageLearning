@@ -24,7 +24,10 @@ function getConfiguredBackendUrl(): string {
 
     const migrated = url
       .replace('http://localhost:8011', 'http://localhost:8012')
-      .replace('http://127.0.0.1:8011', 'http://127.0.0.1:8012');
+      .replace('http://127.0.0.1:8011', 'http://127.0.0.1:8012')
+      // Common misconfig: pointing backend URL to the Vite dev server port.
+      .replace('http://localhost:8000', 'http://localhost:8012')
+      .replace('http://127.0.0.1:8000', 'http://127.0.0.1:8012');
 
     if (migrated !== url) {
       try {
