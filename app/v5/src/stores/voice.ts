@@ -57,7 +57,7 @@ export const useVoiceStore = defineStore('voice', () => {
     if (isConnected.value) return;
     try {
       const cfg: any = await ConfigService.getConfig();
-      const backendUrl = String(cfg?.backend?.wsUrl || cfg?.backendUrl || 'localhost:8011');
+      const backendUrl = String(cfg?.backend?.wsUrl || cfg?.backendUrl || 'localhost:8012');
       voiceSocket.connectWsV1({
         backendUrl,
         sessionId: sessionId.value,
@@ -253,7 +253,8 @@ export const useVoiceStore = defineStore('voice', () => {
     if (config.openingAudio) {
       isSpeaking.value = true;
       setStatus('正在回复...', 'speaking');
-      audioManager.playChunk(config.openingAudio);
+      // openingAudio uses base64(wav bytes)
+      void audioManager.playWavChunk(config.openingAudio);
     }
 
     // ws-v1: 写入对话上下文（system prompt），供后端在 LLM 生成时使用。

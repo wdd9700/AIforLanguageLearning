@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, col, select
 
 from ..db import get_session
-from ..llm import generate_definition, grade_essay
+from ..llm import generate_vocab_fields, grade_essay
 from ..models import ConversationEvent, EssayResult, EssaySubmission, UserVocabQuery
 
 router = APIRouter(tags=["compat-v5"])
@@ -30,23 +30,53 @@ async def v5_query_vocabulary(req: V5VocabQueryRequest, session: Session = Depen
     if not term:
         return {"success": False, "error": "word is required"}
 
-    definition = await generate_definition(term)
+    fields = await generate_vocab_fields(term)
+    meaning = (fields.get("meaning") or "").strip()
+    example = (fields.get("example") or "").strip()
+    example_translation = (fields.get("example_translation") or "").strip()
+
+    defs: list[dict[str, Any]] = []
+    raw_defs = fields.get("definitions")
+    if isinstance(raw_defs, list) and raw_defs:
+        for d in raw_defs:
+            if not isinstance(d, dict):
+                continue
+            defs.append(
+                {
+                    "meaning": str(d.get("meaning") or "").strip(),
+                    "example": str(d.get("example") or "").strip(),
+                    "exampleTranslation": str(d.get("example_translation") or "").strip(),
+                }
+            )
+        defs = [d for d in defs if d.get("meaning") or d.get("example") or d.get("exampleTranslation")]
+
+    legacy_text = f"释义：{meaning or '暂无'}\n例句：{example or '暂无'}"
+    if example_translation:
+        legacy_text += f"\n例句翻译：{example_translation}"
 
     # v5 期望 VocabularyResult
-    data = {
-        "word": term,
-        "definitions": [
-            {
-                "meaning": definition,
-                "example": "",
-            }
-        ],
-        # legacy fields
-        "meaning": definition,
-    }
+    if defs:
+        data = {
+            "word": term,
+            "definitions": defs,
+            "meaning": defs[0].get("meaning") or meaning or legacy_text,
+        }
+    else:
+        data = {
+            "word": term,
+            "definitions": [
+                {
+                    "meaning": meaning or legacy_text,
+                    "example": example,
+                    "exampleTranslation": example_translation,
+                }
+            ],
+            # legacy fields
+            "meaning": meaning or legacy_text,
+        }
 
     # 记一条查询历史（用于 stats）
-    session.add(UserVocabQuery(session_id="", conversation_id="", term=term, source="manual", result=definition))
+    session.add(UserVocabQuery(session_id="", conversation_id="", term=term, source="manual", result=legacy_text))
     session.commit()
 
     return {"success": True, "data": data}
@@ -90,11 +120,27 @@ async def v5_essay_correct(req: V5EssayCorrectRequest, session: Session = Depend
     total = int(result.get("score") or 0)
     total = max(0, min(100, total))
 
-    # 兼容 v5 的 EssayCorrectionResult
-    data = {
-        "original": text,
-        "correction": str(result.get("rewritten") or ""),
-        "scores": {
+    scores_obj = result.get("scores")
+    if isinstance(scores_obj, dict):
+        def _safe_score(key: str) -> int:
+            try:
+                v = int(scores_obj.get(key, total))
+            except Exception:
+                v = total
+            return max(0, min(100, v))
+
+        scores = {
+            "vocabulary": _safe_score("vocabulary"),
+            "grammar": _safe_score("grammar"),
+            "fluency": _safe_score("fluency"),
+            "logic": _safe_score("logic"),
+            "content": _safe_score("content"),
+            "structure": _safe_score("structure"),
+            "total": _safe_score("total"),
+        }
+        total = scores["total"]
+    else:
+        scores = {
             "vocabulary": total,
             "grammar": total,
             "fluency": total,
@@ -102,11 +148,48 @@ async def v5_essay_correct(req: V5EssayCorrectRequest, session: Session = Depend
             "content": total,
             "structure": total,
             "total": total,
-        },
+        }
+
+    raw_suggestions = result.get("suggestions")
+    suggestions = [s for s in (raw_suggestions if isinstance(raw_suggestions, list) else []) if isinstance(s, str) and s.strip()]
+
+    raw_questions = result.get("questions")
+    questions = [q for q in (raw_questions if isinstance(raw_questions, list) else []) if isinstance(q, str) and q.strip()]
+
+    raw_improvements = result.get("improvements")
+    improvements: list[str] = [
+        s
+        for s in (raw_improvements if isinstance(raw_improvements, list) else [])
+        if isinstance(s, str) and s.strip()
+    ]
+    if not improvements:
+        raw_errors = result.get("errors")
+        if isinstance(raw_errors, list):
+            for e in raw_errors:
+                if isinstance(e, str) and e.strip():
+                    improvements.append(e.strip())
+                    continue
+                if isinstance(e, dict):
+                    msg = str(e.get("message") or "").strip()
+                    sug = str(e.get("suggestion") or "").strip()
+                    span = str(e.get("span") or "").strip()
+                    parts = [p for p in [msg, sug] if p]
+                    improvement_text = "；".join(parts)
+                    if span:
+                        improvement_text = f"{span}: {improvement_text}" if improvement_text else span
+                    if improvement_text:
+                        improvements.append(improvement_text)
+
+    # 兼容 v5 的 EssayCorrectionResult
+    data = {
+        "original": text,
+        "correction": str(result.get("rewritten") or ""),
+        "scores": scores,
         "feedback": str(result.get("feedback") or ""),
-        "suggestions": list(result.get("suggestions") or []),
-        "improvements": list(result.get("errors") or []),
-        "evaluation": "",
+        "suggestions": suggestions,
+        "questions": questions,
+        "improvements": improvements,
+        "evaluation": str(result.get("evaluation") or ""),
     }
 
     # 写入 essay 表（用于 stats；也方便后续做历史/分析）

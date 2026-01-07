@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     app_env: str = Field(
         default="development", validation_alias=AliasChoices("AIFL_APP_ENV", "APP_ENV")
     )
-    port: int = Field(default=8011, validation_alias=AliasChoices("AIFL_PORT", "PORT"))
+    port: int = Field(default=8012, validation_alias=AliasChoices("AIFL_PORT", "PORT"))
 
     # LM Studio (OpenAI compatible)
     llm_base_url: str = Field(
@@ -25,7 +25,7 @@ class Settings(BaseSettings):
         default="local-model", validation_alias=AliasChoices("AIFL_LLM_MODEL", "LLM_MODEL")
     )
     llm_timeout_seconds: float = Field(
-        default=2.0,
+        default=30.0,
         validation_alias=AliasChoices("AIFL_LLM_TIMEOUT_SECONDS", "LLM_TIMEOUT_SECONDS"),
     )
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from ..prompts import render_prompt
+from ..tts import synthesize_tts_wav
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 
@@ -44,11 +47,13 @@ class StartSessionResponse(BaseModel):
 async def start_session(req: StartSessionRequest) -> StartSessionResponse:
     system_prompt = (req.systemPrompt or "").strip()
 
-    # P0：为了兼容现有前端流程，先返回一个固定开场白。
-    # openingAudio 暂不生成（前端能正常进入 active 并通过 ws-v1 交互）。
+    # 为了兼容现有前端流程，返回固定开场白；同时生成可播放的 openingAudio。
+    # openingAudio: base64(wav bytes)。默认 TTS 后端是 silence（仍是“真实音频”，只是静音）。
     if system_prompt:
         opening_text = "好的，我们开始练习吧。你可以先说一句话。"
     else:
         opening_text = "我们开始吧。你可以先说一句话。"
 
-    return StartSessionResponse(success=True, openingText=opening_text, openingAudio="")
+    wav = synthesize_tts_wav(opening_text)
+    opening_audio_b64 = base64.b64encode(wav).decode("utf-8") if wav else ""
+    return StartSessionResponse(success=True, openingText=opening_text, openingAudio=opening_audio_b64)

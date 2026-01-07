@@ -1,19 +1,49 @@
-# 快速启动所有服务
+<#
+快速启动/检查服务（开发）
 
-Write-Host "🚀 AI Language Learning - Service Launcher" -ForegroundColor Cyan
+重要：本仓库当前默认开发路线是 FastAPI（backend_fastapi）+ Vite（app/v5）。
+旧的 Node 后端（backend/，默认 3000）属于 legacy，不应再作为默认启动目标。
+
+本脚本只做“真实可验证”的检查：
+- FastAPI: /health 与 /api/system/config
+- 可选外部服务：LM Studio / OCR / TTS / ASR（仅提示，不伪装已启动）
+
+如果你想一键启动 FastAPI + 前端，请用：.\scripts\start.ps1
+#>
+
+param(
+    [int]$BackendPort = 8012
+)
+
+$ErrorActionPreference = 'Stop'
+
+Write-Host "🚀 AI Language Learning - Service Checker" -ForegroundColor Cyan
 Write-Host "=" -NoNewline; for($i=0;$i -lt 60;$i++){Write-Host "=" -NoNewline}; Write-Host ""
 Write-Host ""
 
-# 检查后端是否运行
-Write-Host "1️⃣ Checking Backend Server..." -ForegroundColor Yellow
+# 检查 FastAPI 后端是否运行
+Write-Host "1️⃣ Checking FastAPI Backend..." -ForegroundColor Yellow
+$healthUrl = "http://127.0.0.1:$BackendPort/health"
+$configUrl = "http://127.0.0.1:$BackendPort/api/system/config"
 try {
-    $response = Invoke-RestMethod -Uri "http://localhost:3000/api/system/health" -TimeoutSec 3 -ErrorAction Stop
-    Write-Host "   ✅ Backend is running on port 3000" -ForegroundColor Green
+    $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 3 -ErrorAction Stop
+    Write-Host "   ✅ FastAPI is running: $healthUrl" -ForegroundColor Green
 } catch {
-    Write-Host "   ⚠️  Backend not running. Starting..." -ForegroundColor Yellow
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd ..\backend; npm run dev" -WindowStyle Normal
-    Write-Host "   ⏳ Waiting for backend to start..." -ForegroundColor Yellow
-    Start-Sleep -Seconds 5
+    Write-Host "   ❌ FastAPI not reachable: $healthUrl" -ForegroundColor Red
+    Write-Host "   👉 Run: .\scripts\start.ps1" -ForegroundColor Yellow
+    Write-Host "" 
+    throw "Backend not ready"
+}
+
+try {
+    $cfg = Invoke-RestMethod -Uri $configUrl -TimeoutSec 3 -ErrorAction Stop
+    if ($cfg.success -eq $true) {
+        Write-Host "   ✅ Config endpoint OK: $configUrl" -ForegroundColor Green
+    } else {
+        Write-Host "   ⚠️  Config endpoint responded but success=false: $configUrl" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "   ⚠️  Config endpoint not reachable: $configUrl" -ForegroundColor Yellow
 }
 
 # 检查 LM Studio
@@ -82,23 +112,16 @@ try {
     Write-Host "   ⚠️  Whisper ASR not running (debugging in progress, optional)" -ForegroundColor Yellow
 }
 
-# 总结
+# 总结（只汇报真实检查结果）
 Write-Host ""
 Write-Host "=" -NoNewline; for($i=0;$i -lt 60;$i++){Write-Host "=" -NoNewline}; Write-Host ""
 Write-Host "📊 Service Status Summary" -ForegroundColor Cyan
+Write-Host "   • FastAPI: OK (port $BackendPort)" -ForegroundColor White
+Write-Host "   • LM Studio / OCR / TTS / ASR: see checks above" -ForegroundColor White
 Write-Host ""
 
-# 运行详细检查
-Set-Location ..\backend
-Write-Host "Running detailed service check..." -ForegroundColor Gray
-npm run check
-
-Write-Host ""
 Write-Host "💡 Next Steps:" -ForegroundColor Cyan
-Write-Host "   1. Ensure all required services are running (✅)" -ForegroundColor White
-Write-Host "   2. Run tests: npm run test:services" -ForegroundColor White
-Write-Host "   3. Run API tests: npm run test:endpoints" -ForegroundColor White
-Write-Host "   4. View logs: backend/logs/app.log" -ForegroundColor White
-Write-Host ""
-Write-Host "📖 For detailed setup instructions, see ../docs/backend/SERVICE_SETUP.md" -ForegroundColor Gray
+Write-Host "   1. Start dev stack: .\scripts\start.ps1" -ForegroundColor White
+Write-Host "   2. Run FastAPI tests: cd backend_fastapi; pytest" -ForegroundColor White
+Write-Host "   3. Build v5: cd app\v5; npm run build" -ForegroundColor White
 Write-Host ""

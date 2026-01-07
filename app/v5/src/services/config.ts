@@ -91,7 +91,31 @@ export const ConfigService = {
       general: { theme: 'dark', language: 'zh-CN', autoUpdate: true },
       audio: { inputDevice: 'default', outputDevice: 'default', volume: 80 },
       ai: { model: 'gpt-4-turbo', temperature: 0.7, voice: 'alloy' },
-      backend: { url: 'http://localhost:8011', wsUrl: 'localhost:8011' }
+      backend: { url: 'http://localhost:8012', wsUrl: 'localhost:8012' }
+    };
+
+    const normalize = (cfg: AppConfig): AppConfig => {
+      const next = { ...cfg, backend: { ...cfg.backend } };
+
+      // Normalize backend.url
+      const rawUrl = String(next.backend?.url || '').trim();
+      let url = rawUrl;
+      if (url && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
+        url = `http://${url}`;
+      }
+      url = url.replace(/\/$/, '');
+      url = url.replace('http://localhost:8011', 'http://localhost:8012');
+      url = url.replace('http://127.0.0.1:8011', 'http://127.0.0.1:8012');
+      next.backend.url = url;
+
+      // Normalize backend.wsUrl (host:port)
+      const rawWs = String(next.backend?.wsUrl || '').trim();
+      let wsUrl = rawWs.replace(/^wss?:\/\//, '');
+      wsUrl = wsUrl.replace('localhost:8011', 'localhost:8012');
+      wsUrl = wsUrl.replace('127.0.0.1:8011', '127.0.0.1:8012');
+      next.backend.wsUrl = wsUrl;
+
+      return next;
     };
 
     // 本地缓存（用于 api.ts 动态 baseURL 等）
@@ -108,7 +132,7 @@ export const ConfigService = {
       try {
         const ipcCfg = await window.api.getConfig();
         // 允许 IPC 只返回部分字段；这里与 defaults/localStorage 做合并。
-        const merged = this.mergeConfig(this.mergeConfig(defaults, storedConfig ?? {}), ipcCfg ?? {});
+        const merged = normalize(this.mergeConfig(this.mergeConfig(defaults, storedConfig ?? {}), ipcCfg ?? {}));
         localStorage.setItem('app_config', JSON.stringify(merged));
         return merged;
       } catch (e) {
@@ -118,11 +142,14 @@ export const ConfigService = {
     
     // 2. 回退方案：读取 LocalStorage
     if (storedConfig) {
-      return this.mergeConfig(defaults, storedConfig);
+      const merged = normalize(this.mergeConfig(defaults, storedConfig));
+      localStorage.setItem('app_config', JSON.stringify(merged));
+      return merged;
     }
 
-    localStorage.setItem('app_config', JSON.stringify(defaults));
-    return defaults;
+    const normalizedDefaults = normalize(defaults);
+    localStorage.setItem('app_config', JSON.stringify(normalizedDefaults));
+    return normalizedDefaults;
   },
 
   async setConfig(config: AppConfig): Promise<void> {

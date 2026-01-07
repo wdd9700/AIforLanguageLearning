@@ -4,9 +4,13 @@
 
 要求：
 - 必须是严格 JSON（双引号、无尾随逗号）。
-- 字段必须包含：score, feedback, errors, suggestions, rewritten。
-- score 为 0-100 整数。
-- errors 为数组，每个元素包含：span, message, suggestion。
+- 字段必须包含：score, scores, feedback, evaluation, errors, suggestions, questions, rewritten。
+- score 为 0-100 整数（等同于 scores.total）。
+- scores 为对象，必须包含：vocabulary, grammar, fluency, logic, content, structure, total（均为 0-100 整数）。
+- evaluation 为一句到三句的综合评价。
+- suggestions 为字符串数组（可执行的改进建议）。
+- questions 为字符串数组（给学生的追问/引导思考，可为空数组）。
+- errors 为数组，每个元素是对象，包含：span, message, suggestion。
 
 作文语言：{{ language }}
 

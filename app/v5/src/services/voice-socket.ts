@@ -12,7 +12,7 @@ type MessageHandler = (msg: any) => void;
 type VoiceSocketProtocol = 'legacy-stream' | 'ws-v1';
 
 type WsV1ConnectOptions = {
-  backendUrl: string; // e.g. "127.0.0.1:8011" or "localhost:8011"
+  backendUrl: string; // e.g. "127.0.0.1:8012" or "localhost:8012"
   sessionId: string;
   conversationId: string;
 };
@@ -26,7 +26,7 @@ type WsV1ConnectOptions = {
 class VoiceSocketService {
   private ws: WebSocket | null = null;
   // 默认 WebSocket 地址，生产环境应从配置读取
-  private url: string = 'ws://localhost:8011/stream';
+  private url: string = 'ws://localhost:8012/stream';
 
   private protocol: VoiceSocketProtocol = 'legacy-stream';
   private wsV1: WsV1ConnectOptions | null = null;

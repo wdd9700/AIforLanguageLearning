@@ -18,7 +18,7 @@ export interface VoiceStartResult {
   success: boolean;
   /** AI 的开场白文本 */
   openingText: string;
-  /** AI 开场白的音频数据 (Base64 编码) */
+  /** AI 开场白的音频数据（base64(wav bytes)） */
   openingAudio: string; 
 }
 

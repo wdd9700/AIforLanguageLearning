@@ -28,6 +28,7 @@ defineProps<{
         <div v-for="(def, i) in data.definitions" :key="i" class="mb-3 pl-4 border-l-2 border-gray-700">
           <p class="text-white mb-1">{{ i + 1 }}. {{ def.meaning }}</p>
           <p class="text-gray-500 italic text-xs">{{ def.example }}</p>
+          <p v-if="(def as any).exampleTranslation" class="text-gray-400 text-xs mt-1">{{ (def as any).exampleTranslation }}</p>
         </div>
       </div>
       <!-- Definitions (Simple/Legacy) -->
