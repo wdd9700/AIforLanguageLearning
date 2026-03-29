@@ -56,12 +56,8 @@ export const AnalysisService = {
    * @throws {Error} 如果获取失败
    */
   async getStats(): Promise<LearningStats> {
-    const response = await api.get<{ success: boolean; data: LearningStats }>('/api/learning/stats');
-    const result = response as unknown as { success: boolean; data: LearningStats; error?: string };
-    if (result.success) {
-      return result.data;
-    }
-    throw new Error(result.error || '获取统计数据失败');
+    const response = await api.get<LearningStats>('/v1/learning/stats');
+    return response as unknown as LearningStats;
   },
 
   /**
@@ -74,11 +70,7 @@ export const AnalysisService = {
    * @throws {Error} 如果分析失败
    */
   async analyze(dimension: string): Promise<AnalysisResult> {
-    const response = await api.post<{ success: boolean; data: AnalysisResult }>('/api/learning/analyze', { dimension });
-    const result = response as unknown as { success: boolean; data: AnalysisResult; error?: string };
-    if (result.success) {
-      return result.data;
-    }
-    throw new Error(result.error || '分析失败');
+    const response = await api.post<AnalysisResult>('/v1/learning/analyze', { dimension });
+    return response as unknown as AnalysisResult;
   }
 };

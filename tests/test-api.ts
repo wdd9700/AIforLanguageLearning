@@ -3,7 +3,16 @@
  * 验证所有接口的健壮性
  */
 
-const BASE_URL = 'http://localhost:3000';
+const BASE_URL = process.env.API_URL || 'http://localhost:8012';
+const ROUTE_MODE = (process.env.API_ROUTE_MODE || 'v1').toLowerCase();
+
+const routes = {
+  health: ROUTE_MODE === 'v1' ? '/health' : '/api/system/health',
+  version: ROUTE_MODE === 'v1' ? '/api/system/config' : '/api/system/version',
+  vocabQuery: ROUTE_MODE === 'v1' ? '/v1/vocab/lookup' : '/api/query/vocabulary',
+  learningStats: ROUTE_MODE === 'v1' ? '/v1/learning/stats' : '/api/learning/stats',
+  essayCorrect: ROUTE_MODE === 'v1' ? '/v1/essays/grade' : '/api/essay/correct',
+};
 
 import axios from 'axios';
 
@@ -41,8 +50,9 @@ async function runTests() {
   const waitForServer = async () => {
     const start = Date.now();
     while (Date.now() - start < 15000) {
-      const h = await request('GET', '/api/system/health');
-      if (h.status === 200 && h.data && h.data.success) {
+      const h = await request('GET', routes.health);
+      const ok = h.status === 200 && (ROUTE_MODE === 'v1' ? !!h.data?.ok : !!h.data?.success);
+      if (ok) {
         console.log('Server is ready. Proceeding with tests...');
         return true;
       }
@@ -60,14 +70,14 @@ async function runTests() {
 
   // 1. 系统健康检查
   console.log('1. 测试系统健康检查...');
-  const health = await request('GET', '/api/system/health');
+  const health = await request('GET', routes.health);
   console.log(`   状态: ${health.status}`);
   console.log(`   响应:`, JSON.stringify(health.data, null, 2));
   console.log('');
 
   // 2. 版本信息
   console.log('2. 测试版本信息...');
-  const version = await request('GET', '/api/system/version');
+  const version = await request('GET', routes.version);
   console.log(`   状态: ${version.status}`);
   console.log(`   响应:`, JSON.stringify(version.data, null, 2));
   console.log('');
@@ -150,13 +160,19 @@ async function runTests() {
 
   // 10. 词汇查询（文本输入）
   console.log('10. 测试词汇查询（文本输入）...');
-  const vocabQuery = await request('POST', '/api/query/vocabulary', {
-    word: 'serendipity',
-  }, accessToken);
+  const vocabBody = ROUTE_MODE === 'v1'
+    ? { term: 'serendipity', source: 'manual' }
+    : { word: 'serendipity' };
+  const vocabQuery = await request('POST', routes.vocabQuery, vocabBody, accessToken);
   console.log(`   状态: ${vocabQuery.status}`);
-  if (vocabQuery.data?.success) {
+  if (vocabQuery.status === 200) {
     console.log(`   ✓ 查询成功`);
-    console.log(`   解释: ${vocabQuery.data.data.explanation?.substring(0, 100)}...`);
+    if (ROUTE_MODE === 'v1') {
+      console.log(`   term: ${vocabQuery.data?.term}`);
+      console.log(`   definition: ${String(vocabQuery.data?.definition || '').substring(0, 100)}...`);
+    } else {
+      console.log(`   解释: ${String(vocabQuery.data?.data?.meaning || '').substring(0, 100)}...`);
+    }
   } else {
     console.log(`   响应:`, JSON.stringify(vocabQuery.data, null, 2));
   }
@@ -164,23 +180,21 @@ async function runTests() {
 
   // 11. 词汇查询（无token）
   console.log('11. 测试词汇查询（无token）...');
-  const vocabNoToken = await request('POST', '/api/query/vocabulary', {
-    word: 'test',
-  });
+  const vocabNoToken = await request('POST', routes.vocabQuery, ROUTE_MODE === 'v1' ? { term: 'test' } : { word: 'test' });
   console.log(`   状态: ${vocabNoToken.status}`);
   console.log(`   响应:`, JSON.stringify(vocabNoToken.data, null, 2));
   console.log('');
 
   // 12. 词汇查询（缺少参数）
   console.log('12. 测试词汇查询（缺少参数）...');
-  const vocabMissing = await request('POST', '/api/query/vocabulary', {}, accessToken);
+  const vocabMissing = await request('POST', routes.vocabQuery, {}, accessToken);
   console.log(`   状态: ${vocabMissing.status}`);
   console.log(`   响应:`, JSON.stringify(vocabMissing.data, null, 2));
   console.log('');
 
   // 13. 学习统计
   console.log('13. 测试学习统计...');
-  const stats = await request('GET', '/api/learning/stats', undefined, accessToken);
+  const stats = await request('GET', routes.learningStats, undefined, accessToken);
   console.log(`   状态: ${stats.status}`);
   console.log(`   响应:`, JSON.stringify(stats.data, null, 2));
   console.log('');
@@ -198,14 +212,23 @@ async function runTests() {
 
   // 15. 作文批改（正常）
   console.log('15. 测试作文批改（正常）...');
-  const essay = await request('POST', '/api/essay/correct', {
-    text: 'I am very happy today. Because I learning English.',
-    language: 'english',
-  }, accessToken);
+  const essayBody = ROUTE_MODE === 'v1'
+    ? {
+        ocr_text: 'I am very happy today. Because I learning English.',
+        language: 'english',
+      }
+    : {
+        text: 'I am very happy today. Because I learning English.',
+        language: 'english',
+      };
+  const essay = await request('POST', routes.essayCorrect, essayBody, accessToken);
   console.log(`   状态: ${essay.status}`);
-  if (essay.data?.success) {
+  if (essay.status === 200) {
     console.log(`   ✓ 批改成功`);
-    console.log(`   批改: ${essay.data.data.correction?.substring(0, 100)}...`);
+    const text = ROUTE_MODE === 'v1'
+      ? String(essay.data?.result?.rewritten || '')
+      : String(essay.data?.data?.correction || '');
+    console.log(`   批改: ${text.substring(0, 100)}...`);
   } else {
     console.log(`   响应:`, JSON.stringify(essay.data, null, 2));
   }

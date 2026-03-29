@@ -18,7 +18,7 @@ def test_ws_voice_barge_in_aborts_previous(tmp_path: Path, monkeypatch) -> None:
     init_db()
 
     # Force the first request to have a long-running LLM stream so we can barge-in deterministically.
-    async def fake_stream_chat(*, system_prompt: str, user_text: str):
+    async def fake_stream_chat(*, system_prompt: str, user_text: str, history=None):
         yield "token1"
         await asyncio.sleep(5)
         yield "token2"

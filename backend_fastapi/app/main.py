@@ -18,8 +18,9 @@ from .llm import chat_complete, generate_definition, grade_essay, stream_chat, s
 from .logging import configure_logging
 from .models import ConversationEvent, EssayResult, EssaySubmission, PublicVocabEntry, UserVocabQuery
 from .routers.auth import router as auth_router
-from .routers.compat_v5 import router as compat_v5_router
+from .routers.compat_legacy import router as compat_legacy_router
 from .routers.essays import router as essays_router
+from .routers.learning import router as learning_router
 from .routers.system import router as system_router
 from .routers.voice import router as voice_router
 from .routers.vocab import router as vocab_router
@@ -74,7 +75,9 @@ app.include_router(essays_router)
 app.include_router(voice_router)
 app.include_router(auth_router)
 app.include_router(system_router)
-app.include_router(compat_v5_router)
+app.include_router(learning_router)
+if bool(getattr(settings, "enable_legacy_compat_api", True)):
+    app.include_router(compat_legacy_router)
 
 
 @app.get("/health")
@@ -170,6 +173,87 @@ async def ws_v1(ws: WebSocket) -> None:
         except Exception:
             return ""
 
+    def get_latest_context_memory() -> str:
+        try:
+            with Session(get_engine()) as session:
+                evt = session.exec(
+                    select(ConversationEvent)
+                    .where(ConversationEvent.conversation_id == conversation_id)
+                    .where(ConversationEvent.type == "CONTEXT_MEMORY")
+                    .order_by(col(ConversationEvent.seq).desc())
+                ).first()
+                if evt is None:
+                    return ""
+                payload = dict(evt.payload or {})
+                return str(payload.get("memory") or "").strip()
+        except Exception:
+            return ""
+
+    async def patch_context_memory(*, op: str, text: str, request_id: str) -> str:
+        """修改持久化的对话上下文记忆。
+
+        op:
+        - append: 追加
+        - replace: 覆盖
+        - clear: 清空
+        """
+
+        current = get_latest_context_memory()
+        note = (text or "").strip()
+        action = (op or "append").strip().lower()
+
+        if action == "clear":
+            merged = ""
+        elif action == "replace":
+            merged = note
+        else:
+            merged = (f"{current}\n{note}" if current and note else (note or current)).strip()
+
+        # 防止无限增长：仅保留末尾 2400 字符。
+        if len(merged) > 2400:
+            merged = merged[-2400:]
+
+        await send_event(
+            "CONTEXT_MEMORY",
+            {"memory": merged, "op": action},
+            request_id=request_id,
+            ts=int(time.time() * 1000),
+            final=False,
+            log=True,
+        )
+        return merged
+
+    def get_recent_chat_history(*, exclude_request_id: str, max_messages: int = 10) -> list[dict[str, str]]:
+        """从会话事件中提取最近对话轮次（user/assistant）供 LLM 续文使用。"""
+        try:
+            with Session(get_engine()) as session:
+                rows = session.exec(
+                    select(ConversationEvent)
+                    .where(ConversationEvent.conversation_id == conversation_id)
+                    .where(col(ConversationEvent.type).in_(["ASR_FINAL", "LLM_RESULT"]))
+                    .order_by(col(ConversationEvent.seq).asc())
+                ).all()
+        except Exception:
+            return []
+
+        messages: list[dict[str, str]] = []
+        for row in rows:
+            if str(row.request_id or "") == exclude_request_id:
+                continue
+            payload = dict(row.payload or {})
+            if row.type == "ASR_FINAL":
+                text = str(payload.get("text") or "").strip()
+                if text:
+                    messages.append({"role": "user", "content": text})
+            elif row.type == "LLM_RESULT":
+                text = str(payload.get("markdown") or payload.get("text") or "").strip()
+                if text:
+                    messages.append({"role": "assistant", "content": text})
+
+        if len(messages) > max_messages:
+            messages = messages[-max_messages:]
+        return messages
+
     # 重连恢复：先重放遗漏事件，再继续处理后续消息
     if last_seq is not None:
         with Session(get_engine()) as session:
@@ -201,6 +285,12 @@ async def ws_v1(ws: WebSocket) -> None:
         voice_finalize_tasks: dict[str, asyncio.Task[None]] = {}
         voice_completed: set[str] = set()
         voice_aborted: set[str] = set()
+
+        # 记录每个 request 的回复文本与 TTS 已播报进度，用于“打断续接上下文”。
+        voice_reply_text: dict[str, str] = {}
+        voice_tts_total_bytes: dict[str, int] = {}
+        voice_tts_sent_bytes: dict[str, int] = {}
+        voice_tts_sent_chunks: dict[str, int] = {}
 
         pending_binary_chunk_for: str | None = None
         asr_transcriber = None
@@ -244,6 +334,36 @@ async def ws_v1(ws: WebSocket) -> None:
             if req_id in voice_completed:
                 return
 
+            # 若是 barge-in 打断，尽量恢复“被打断到哪里”的上下文供下一轮续接。
+            has_interruption_context = False
+            if reason == "barge_in":
+                reply_text = str(voice_reply_text.get(req_id) or "").strip()
+                total_bytes = int(voice_tts_total_bytes.get(req_id) or 0)
+                sent_bytes = int(voice_tts_sent_bytes.get(req_id) or 0)
+
+                if reply_text and total_bytes > 0 and sent_bytes > 0:
+                    ratio = max(0.0, min(1.0, sent_bytes / float(total_bytes)))
+                    cut = int(len(reply_text) * ratio)
+                    spoken_text = reply_text[:cut].strip()
+                    remaining_text = reply_text[cut:].strip()
+
+                    # 限制注入长度，避免 system prompt 过长影响响应质量。
+                    spoken_preview = spoken_text[-180:] if spoken_text else ""
+                    remaining_preview = remaining_text[:220] if remaining_text else ""
+
+                    interruption_context_note = (
+                        "【打断上下文】上一次助手回复在播报中被用户打断。"
+                        f"已播报内容（末尾片段）：{spoken_preview or '（几乎未播报）'}；"
+                        f"未播报内容（开头片段）：{remaining_preview or '（无）'}。"
+                        "请在下一次回复时自然衔接，不要机械重复整段上一条回复。"
+                    )
+                    await patch_context_memory(
+                        op="append",
+                        text=interruption_context_note,
+                        request_id=f"ctxmem_{uuid.uuid4().hex[:8]}",
+                    )
+                    has_interruption_context = True
+
             voice_aborted.add(req_id)
 
             # Cancel in-flight tasks (partial/finalize).
@@ -259,10 +379,17 @@ async def ws_v1(ws: WebSocket) -> None:
             voice_streams.pop(req_id, None)
             voice_last_activity_ms.pop(req_id, None)
             voice_asr_only.pop(req_id, None)
+            voice_reply_text.pop(req_id, None)
+            voice_tts_total_bytes.pop(req_id, None)
+            voice_tts_sent_bytes.pop(req_id, None)
+            voice_tts_sent_chunks.pop(req_id, None)
 
             await send_event(
                 "TASK_ABORTED",
-                {"reason": reason},
+                {
+                    "reason": reason,
+                    "has_interruption_context": has_interruption_context,
+                },
                 request_id=req_id,
             )
             await send_event(
@@ -350,9 +477,22 @@ async def ws_v1(ws: WebSocket) -> None:
                 reply_md = "（未检测到语音内容）"
             else:
                 system_prompt = get_latest_system_prompt()
+                context_memory = get_latest_context_memory()
+                if context_memory:
+                    if system_prompt:
+                        system_prompt = f"{system_prompt}\n\n{context_memory}"
+                    else:
+                        system_prompt = context_memory
+
+                history = get_recent_chat_history(exclude_request_id=req_id, max_messages=10)
+
                 parts: list[str] = []
                 streamed = False
-                async for delta in stream_chat(system_prompt=system_prompt, user_text=user_prompt):
+                async for delta in stream_chat(
+                    system_prompt=system_prompt,
+                    user_text=user_prompt,
+                    history=history,
+                ):
                     if req_id in voice_aborted:
                         return
                     streamed = True
@@ -365,7 +505,11 @@ async def ws_v1(ws: WebSocket) -> None:
                 if streamed:
                     reply_md = ("".join(parts)).strip() or "（LLM 输出为空）"
                 else:
-                    reply_md = await chat_complete(system_prompt=system_prompt, user_text=user_prompt)
+                    reply_md = await chat_complete(
+                        system_prompt=system_prompt,
+                        user_text=user_prompt,
+                        history=history,
+                    )
 
             if req_id in voice_aborted:
                 return
@@ -376,17 +520,28 @@ async def ws_v1(ws: WebSocket) -> None:
                 request_id=req_id,
             )
 
+            # 记录本轮完整回复文本，供后续可能的 barge-in 计算“被打断位置”。
+            voice_reply_text[req_id] = reply_md
+
             if req_id in voice_aborted:
                 return
 
             # P1: TTS_CHUNK
             wav_bytes = await asyncio.to_thread(synthesize_tts_wav, reply_md)
+            voice_tts_total_bytes[req_id] = len(wav_bytes)
+            voice_tts_sent_bytes[req_id] = 0
+            voice_tts_sent_chunks[req_id] = 0
+
             chunk_size = int(settings.tts_chunk_size_bytes) if int(settings.tts_chunk_size_bytes) > 0 else 16 * 1024
             chunks = [wav_bytes[i : i + chunk_size] for i in range(0, len(wav_bytes), chunk_size)] or [b""]
 
             for idx, ch in enumerate(chunks):
                 if req_id in voice_aborted:
                     return
+
+                voice_tts_sent_bytes[req_id] = int(voice_tts_sent_bytes.get(req_id, 0)) + len(ch)
+                voice_tts_sent_chunks[req_id] = idx + 1
+
                 await send_event(
                     "TTS_CHUNK",
                     {
@@ -409,6 +564,10 @@ async def ws_v1(ws: WebSocket) -> None:
             await send_event("TASK_FINISHED", {"ok": True, "reason": reason}, request_id=req_id, final=True)
             voice_completed.add(req_id)
             voice_finalize_tasks.pop(req_id, None)
+            voice_reply_text.pop(req_id, None)
+            voice_tts_total_bytes.pop(req_id, None)
+            voice_tts_sent_bytes.pop(req_id, None)
+            voice_tts_sent_chunks.pop(req_id, None)
 
         while True:
             await cleanup_stale_voice_requests()
@@ -541,6 +700,22 @@ async def ws_v1(ws: WebSocket) -> None:
                     ts=ts,
                     final=False,
                     log=True,
+                )
+                continue
+
+            # 修改可持久化上下文记忆。
+            # payload:
+            # - op: append | replace | clear
+            # - text: 需要写入的记忆文本（clear 可省略）
+            if msg_type == "CONTEXT_PATCH" and isinstance(payload, dict):
+                req_id = str(data.get("request_id") or f"ctxm_{uuid.uuid4().hex[:8]}")
+                op = str(payload.get("op") or "append")
+                text = str(payload.get("text") or "")
+                merged = await patch_context_memory(op=op, text=text, request_id=req_id)
+                await send_event(
+                    "CONTEXT_PATCHED",
+                    {"ok": True, "op": op, "memory": merged},
+                    request_id=req_id,
                 )
                 continue
 

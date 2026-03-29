@@ -7,6 +7,42 @@
 import api from './api';
 import type { EssayCorrectionResult } from '../types/essay';
 
+function toEssayCorrectionResult(raw: any, originalText: string): EssayCorrectionResult {
+  const result = (raw?.result && typeof raw.result === 'object') ? raw.result : raw;
+
+  const total = Number(result?.score ?? result?.scores?.total ?? 0);
+  const scores = result?.scores && typeof result.scores === 'object'
+    ? result.scores
+    : {
+        vocabulary: Math.max(0, Math.min(100, Math.round(total))),
+        grammar: Math.max(0, Math.min(100, Math.round(total))),
+        fluency: Math.max(0, Math.min(100, Math.round(total))),
+        logic: Math.max(0, Math.min(100, Math.round(total))),
+        content: Math.max(0, Math.min(100, Math.round(total))),
+        structure: Math.max(0, Math.min(100, Math.round(total))),
+        total: Math.max(0, Math.min(100, Math.round(total))),
+      };
+
+  return {
+    original: String(result?.original || originalText || ''),
+    correction: String(result?.rewritten || result?.correction || ''),
+    scores: {
+      vocabulary: Number(scores.vocabulary ?? total ?? 0),
+      grammar: Number(scores.grammar ?? total ?? 0),
+      fluency: Number(scores.fluency ?? total ?? 0),
+      logic: Number(scores.logic ?? total ?? 0),
+      content: Number(scores.content ?? total ?? 0),
+      structure: Number(scores.structure ?? total ?? 0),
+      total: Number(scores.total ?? total ?? 0),
+    },
+    feedback: String(result?.feedback || ''),
+    suggestions: Array.isArray(result?.suggestions) ? result.suggestions : [],
+    questions: Array.isArray(result?.questions) ? result.questions : [],
+    improvements: Array.isArray(result?.improvements) ? result.improvements : [],
+    evaluation: String(result?.evaluation || ''),
+  };
+}
+
 export const EssayService = {
   /**
    * 文本作文批改
@@ -19,13 +55,8 @@ export const EssayService = {
    * @throws {Error} 如果批改失败
    */
   async correct(text: string, language: string = 'english'): Promise<EssayCorrectionResult> {
-    const response = await api.post('/api/essay/correct', { text, language }, { timeout: 60000 });
-    const result = response as unknown as { success: boolean; data: EssayCorrectionResult; error?: string };
-    
-    if (result.success) {
-      return result.data;
-    }
-    throw new Error(result.error || '批改失败');
+    const response = await api.post('/v1/essays/grade', { ocr_text: text, language }, { timeout: 60000 });
+    return toEssayCorrectionResult(response, text);
   },
 
   /**
@@ -42,12 +73,7 @@ export const EssayService = {
     // 预处理：去除 Base64 前缀
     const cleanBase64 = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
 
-    const response = await api.post('/api/essay/correct', { image: cleanBase64, language }, { timeout: 60000 });
-    const result = response as unknown as { success: boolean; data: EssayCorrectionResult; error?: string };
-
-    if (result.success) {
-      return result.data;
-    }
-    throw new Error(result.error || 'OCR 批改失败');
+    const response = await api.post('/v1/essays/grade-ocr', { image: cleanBase64, language }, { timeout: 60000 });
+    return toEssayCorrectionResult(response, '');
   }
 };

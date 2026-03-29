@@ -1,0 +1,40 @@
+{
+  "appConfig": {
+    "general": {
+      "theme": "system",
+      "language": "en-US",
+      "autoUpdate": false
+    },
+    "audio": {
+      "inputDevice": "mic1",
+      "outputDevice": "spk1",
+      "volume": 100
+    },
+    "ai": {
+      "model": "local-model",
+      "temperature": 2,
+      "voice": "alloy"
+    },
+    "backend": {
+      "url": "http://localhost:8012",
+      "wsUrl": "localhost:8012"
+    }
+  },
+  "models": {
+    "primary": "qwen/qwen3.5-35b-a3b",
+    "available": [
+      "qwen/qwen3.5-35b-a3b",
+      "qwen/qwen3-vl-8b",
+      "qwen/qwen3-4b-thinking-2507",
+      "qwen/qwen3-coder-next"
+    ],
+    "scene": {
+      "chat": "qwen/qwen3.5-35b-a3b",
+      "vocab": "",
+      "essay": ""
+    }
+  },
+  "prompts": {
+    "overrides": {}
+  }
+}

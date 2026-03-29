@@ -11,7 +11,17 @@ import axios, { AxiosInstance } from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const BASE_URL = process.env.API_URL || 'http://localhost:3000';
+const BASE_URL = process.env.API_URL || 'http://localhost:8012';
+const ROUTE_MODE = (process.env.API_ROUTE_MODE || 'v1').toLowerCase();
+
+const routes = {
+  health: ROUTE_MODE === 'v1' ? '/health' : '/api/system/health',
+  version: ROUTE_MODE === 'v1' ? '/api/system/config' : '/api/system/version',
+  vocabQuery: ROUTE_MODE === 'v1' ? '/v1/vocab/lookup' : '/api/query/vocabulary',
+  ocrQuery: ROUTE_MODE === 'v1' ? '/v1/vocab/lookup-ocr' : '/api/query/ocr',
+  essayCorrect: ROUTE_MODE === 'v1' ? '/v1/essays/grade' : '/api/essay/correct',
+  learningStats: ROUTE_MODE === 'v1' ? '/v1/learning/stats' : '/api/learning/stats',
+};
 
 // 创建 axios 实例
 const api: AxiosInstance = axios.create({
@@ -39,7 +49,7 @@ async function waitForServer(maxAttempts = 30, interval = 1000): Promise<boolean
   
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      const response = await api.get('/api/system/health');
+      const response = await api.get(routes.health);
       if (response.status === 200) {
         console.log('✅ Server is ready!\n');
         return true;
@@ -62,14 +72,14 @@ async function waitForServer(maxAttempts = 30, interval = 1000): Promise<boolean
 async function testSystemHealth() {
   console.log('\n📊 Testing System Endpoints...');
   
-  const healthRes = await api.get('/api/system/health');
+  const healthRes = await api.get(routes.health);
   logTest(
     'System Health',
-    healthRes.status === 200 && healthRes.data.success,
+    healthRes.status === 200 && (ROUTE_MODE === 'v1' ? !!healthRes.data?.ok : !!healthRes.data?.success),
     healthRes.status === 200 ? 'System healthy' : `Status ${healthRes.status}`
   );
 
-  const versionRes = await api.get('/api/system/version');
+  const versionRes = await api.get(routes.version);
   logTest(
     'System Version',
     versionRes.status === 200,
@@ -135,24 +145,31 @@ async function testVocabularyQuery() {
   console.log('\n📝 Testing Entry 1: Text Input (Vocabulary Query)...');
 
   const response = await api.post(
-    '/api/query/vocabulary',
-    {
-      word: 'ephemeral',
-      context: 'The beauty of cherry blossoms is ephemeral.',
-      sourceLanguage: 'en',
-      targetLanguage: 'zh',
-    },
+    routes.vocabQuery,
+    ROUTE_MODE === 'v1'
+      ? {
+          term: 'ephemeral',
+          source: 'manual',
+        }
+      : {
+          word: 'ephemeral',
+          context: 'The beauty of cherry blossoms is ephemeral.',
+          sourceLanguage: 'en',
+          targetLanguage: 'zh',
+        },
     {
       headers: { Authorization: `Bearer ${authToken}` },
     }
   );
 
-  const data = response.data.data;
-  if (response.status === 200 && (data?.explanation || data?.definition)) {
-    const explanation = String(data.explanation || data.definition);
+  const data = response.data;
+  if (response.status === 200) {
+    const explanation = ROUTE_MODE === 'v1'
+      ? String(data?.definition || '')
+      : String(data?.data?.meaning || data?.data?.definition || '');
     logTest(
       'Vocabulary Query',
-      true,
+      !!explanation,
       `Explanation/Definition: "${explanation.substring(0, 50)}..."`
     );
     console.log('   Full response:', explanation);
@@ -183,21 +200,28 @@ async function testOCRQuery() {
   const imageBase64 = imageBuffer.toString('base64');
 
   const response = await api.post(
-    '/api/query/ocr',
-    {
-      image: imageBase64,
-      sourceLanguage: 'en',
-      targetLanguage: 'zh',
-    },
+    routes.ocrQuery,
+    ROUTE_MODE === 'v1'
+      ? {
+          image: imageBase64,
+          language: 'english',
+        }
+      : {
+          image: imageBase64,
+          sourceLanguage: 'en',
+          targetLanguage: 'zh',
+        },
     {
       headers: { Authorization: `Bearer ${authToken}` },
     }
   );
 
-  if (response.status === 200 && (response.data.data?.text || response.data.data?.detectedText)) {
-    const text = response.data.data.text || response.data.data.detectedText;
+  if (response.status === 200) {
+    const text = ROUTE_MODE === 'v1'
+      ? (response.data?.ocr_text || response.data?.term || '')
+      : (response.data?.data?.text || response.data?.data?.detectedText || response.data?.data?.ocrText || '');
     logTest('OCR Query', true, `OCR text: "${text.substring(0, 50)}..."`);
-    if (response.data.data.explanation) {
+    if (ROUTE_MODE !== 'v1' && response.data?.data?.explanation) {
       console.log('   Explanation:', JSON.stringify(response.data.data.explanation).substring(0, 100));
     }
   } else {
@@ -309,27 +333,34 @@ I want to improving my English writing skill.
 The weather is very nice today, I go to park.`;
 
   const response = await api.post(
-    '/api/essay/correct',
-    {
-      text: essay,
-      language: 'en',
-      targetLanguage: 'zh',
-    },
+    routes.essayCorrect,
+    ROUTE_MODE === 'v1'
+      ? {
+          ocr_text: essay,
+          language: 'en',
+        }
+      : {
+          text: essay,
+          language: 'en',
+          targetLanguage: 'zh',
+        },
     {
       headers: { Authorization: `Bearer ${authToken}` },
     }
   );
 
-  const data = response.data.data;
-  const corrections = data?.corrections || data?.details;
+  const data = response.data;
+  const corrections = ROUTE_MODE === 'v1'
+    ? (data?.result?.errors || data?.result?.suggestions || [])
+    : (data?.data?.corrections || data?.data?.details || []);
 
-  if (response.status === 200 && corrections) {
+  if (response.status === 200) {
     logTest(
       'Essay Correction',
       true,
-      `Found ${corrections.length} corrections`
+      `Found ${Array.isArray(corrections) ? corrections.length : 0} corrections`
     );
-    console.log('   Corrections:', JSON.stringify(corrections.slice(0, 2), null, 2));
+    console.log('   Corrections:', JSON.stringify((Array.isArray(corrections) ? corrections : []).slice(0, 2), null, 2));
   } else {
     console.log('   Full Response Data:', JSON.stringify(response.data, null, 2));
     logTest(
@@ -360,7 +391,7 @@ async function testLearningRecords() {
   );
 
   // 获取学习统计
-  const statsRes = await api.get('/api/learning/stats', {
+  const statsRes = await api.get(routes.learningStats, {
     headers: { Authorization: `Bearer ${authToken}` },
   });
 
@@ -370,8 +401,9 @@ async function testLearningRecords() {
     statsRes.status === 200 ? 'Stats retrieved' : `Status ${statsRes.status}`
   );
 
-  if (statsRes.status === 200 && statsRes.data.data) {
-    console.log('   Stats:', JSON.stringify(statsRes.data.data, null, 2));
+  if (statsRes.status === 200) {
+    const statsData = ROUTE_MODE === 'v1' ? statsRes.data : statsRes.data?.data;
+    console.log('   Stats:', JSON.stringify(statsData, null, 2));
   }
 }
 

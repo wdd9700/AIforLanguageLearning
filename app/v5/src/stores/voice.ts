@@ -40,6 +40,8 @@ export const useVoiceStore = defineStore('voice', () => {
   const conversationId = ref(`conv_${Date.now().toString(16)}`);
   const currentRequestId = ref<string | null>(null);
   const wsV1PreferBinary = ref(true);
+  const autoCaptureEnabled = ref(false);
+  const speechThreshold = ref(420);
 
   // Ensure we only register one WS message handler.
   let wsUnsubscribe: (() => void) | null = null;
@@ -184,6 +186,7 @@ export const useVoiceStore = defineStore('voice', () => {
             audioManager.stopPlayback();
             isSpeaking.value = false;
             isProcessing.value = false;
+            currentRequestId.value = null;
             setStatus('已打断', 'success');
           }
           return;
@@ -191,6 +194,7 @@ export const useVoiceStore = defineStore('voice', () => {
         case 'TASK_FINISHED': {
           if (rid && rid === currentRequestId.value) {
             isProcessing.value = false;
+            currentRequestId.value = null;
             // We don't have a precise audio-ended callback; best-effort clear UI state when task completes.
             isSpeaking.value = false;
             if ((payload?.ok ?? true) === false) {
@@ -280,6 +284,7 @@ export const useVoiceStore = defineStore('voice', () => {
     // 重置状态
     currentDialogue.value = [];
     currentLanguage.value = config.language;
+    autoCaptureEnabled.value = true;
     
     // 添加开场白消息
     addMessage('assistant', config.openingText);
@@ -319,6 +324,9 @@ export const useVoiceStore = defineStore('voice', () => {
         }
       });
     }
+
+    // 会话启动后直接进入“自动聆听”模式。
+    await startRecording();
   };
 
   /**
@@ -354,28 +362,40 @@ export const useVoiceStore = defineStore('voice', () => {
 
     try {
       isRecording.value = true;
+      autoCaptureEnabled.value = true;
       setStatus('正在聆听...', 'listening');
-
-      // 生成 request_id 并通知后端开始一段语音输入
-      const rid = `voice_${Date.now().toString(16)}`;
-      currentRequestId.value = rid;
-      // barge-in: local stop playback immediately
-      audioManager.stopPlayback();
-      isSpeaking.value = false;
-
-      voiceSocket.startAudio(rid, {
-        sample_rate: 16000,
-        channels: 1,
-        encoding: 'pcm_s16le'
-      });
       
-      // 启动录音并设置数据回调
+      // 持续录音：检测到语音能量后自动创建 request，并交给后端 VAD 自动收句。
       await audioManager.startRecording((data) => {
-        if (isRecording.value) {
-          // ws-v1: JSON header + binary frame (prefer)
-          if (currentRequestId.value) {
-            voiceSocket.sendAudioChunkWsV1(currentRequestId.value, data, wsV1PreferBinary.value);
-          }
+        if (!isRecording.value || !autoCaptureEnabled.value) {
+          return;
+        }
+
+        const rms = calcRms(data);
+
+        // 没有进行中的语音请求时，只有检测到明确语音才发起新请求。
+        if (!currentRequestId.value && rms >= speechThreshold.value) {
+          const rid = `voice_${Date.now().toString(16)}`;
+          currentRequestId.value = rid;
+
+          // barge-in: 本地立即停止旧播报，随后后端也会基于新请求触发中断逻辑。
+          audioManager.stopPlayback();
+          isSpeaking.value = false;
+          isProcessing.value = false;
+
+          voiceSocket.startAudio(rid, {
+            sample_rate: 16000,
+            channels: 1,
+            encoding: 'pcm_s16le',
+            vad_enabled: true,
+            vad_silence_ms: 700,
+          });
+          setStatus('检测到语音，正在识别...', 'listening');
+        }
+
+        // 只有有 request_id 时才上传 chunk。
+        if (currentRequestId.value) {
+          voiceSocket.sendAudioChunkWsV1(currentRequestId.value, data, wsV1PreferBinary.value);
         }
       });
 
@@ -390,16 +410,18 @@ export const useVoiceStore = defineStore('voice', () => {
    * 停止录音
    */
   const stopRecording = () => {
+    autoCaptureEnabled.value = false;
     isRecording.value = false;
     audioManager.stopRecording();
     if (currentRequestId.value) {
       voiceSocket.endAudio(currentRequestId.value);
+      currentRequestId.value = null;
     } else {
       // legacy fallback
       voiceSocket.send({ type: 'stop' });
     }
-    isProcessing.value = true;
-    setStatus('处理中...', 'processing');
+    isProcessing.value = false;
+    setStatus('已暂停自动聆听', 'success');
   };
 
   /**
@@ -409,8 +431,21 @@ export const useVoiceStore = defineStore('voice', () => {
     if (isRecording.value) {
       stopRecording();
     } else {
-      startRecording();
+      void startRecording();
     }
+  };
+
+  /**
+   * 计算一段 PCM16 音频的 RMS（用于语音起始检测）。
+   */
+  const calcRms = (pcm: Int16Array): number => {
+    if (!pcm || pcm.length === 0) return 0;
+    let sum = 0;
+    for (let i = 0; i < pcm.length; i++) {
+      const v = pcm[i];
+      sum += v * v;
+    }
+    return Math.sqrt(sum / pcm.length);
   };
 
   return {
@@ -419,6 +454,7 @@ export const useVoiceStore = defineStore('voice', () => {
     isProcessing,
     isSpeaking,
     isConnected,
+    autoCaptureEnabled,
     statusText,
     statusType,
     currentLanguage,

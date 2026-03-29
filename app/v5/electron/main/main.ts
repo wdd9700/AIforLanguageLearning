@@ -27,14 +27,14 @@ const store = new Store<Config>({
     defaults: {
         ports: { lmstudio: null, whisper: null, surya: null, cosy: null, app: 0 },
         theme: 'system',
-        backendUrl: 'localhost:8011',
+        backendUrl: 'localhost:8012',
         backend: {
-            url: 'http://localhost:8011',
-            wsUrl: 'localhost:8011'
+            url: 'http://localhost:8012',
+            wsUrl: 'localhost:8012'
         },
         general: { theme: 'system', language: 'zh-CN', autoUpdate: true },
         audio: { inputDevice: 'default', outputDevice: 'default', volume: 80 },
-        ai: { model: 'gpt-4-turbo', temperature: 0.7, voice: 'alloy' }
+        ai: { model: 'local-model', temperature: 0.7, voice: 'alloy' }
     }
 });
 
@@ -69,7 +69,7 @@ app.on('ready', () => {
                     tts: {
                         name: 'tts',
                         type: 'http' as const,
-                        endpoint: 'http://localhost:8011'
+                        endpoint: 'http://localhost:8012'
                     },
                     asr: {
                         name: 'asr',

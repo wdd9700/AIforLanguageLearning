@@ -16,7 +16,7 @@ def test_ws_voice_tts_chunk_order_and_last(tmp_path: Path, monkeypatch) -> None:
     override_engine_for_tests(engine)
     init_db()
 
-    async def fake_stream_chat(*, system_prompt: str, user_text: str):
+    async def fake_stream_chat(*, system_prompt: str, user_text: str, history=None):
         yield "hi"
 
     def fake_tts(_text: str, *, sample_rate: int = 16000, channels: int = 1) -> bytes:

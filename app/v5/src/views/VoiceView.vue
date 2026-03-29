@@ -75,7 +75,7 @@ const handleStart = async () => {
     const result = await VoiceService.startSession(generatedPrompt.value);
     
     // 使用自定义提示词和开场白初始化 Store
-    voiceStore.startCustomSession({
+    await voiceStore.startCustomSession({
       systemPrompt: generatedPrompt.value,
       openingText: result.openingText,
       openingAudio: result.openingAudio,
@@ -236,10 +236,14 @@ onUnmounted(() => {
           <button
             @click="voiceStore.toggleRecording"
             class="w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300 shadow-lg hover:scale-105"
-            :class="voiceStore.isRecording ? 'bg-red-500 hover:bg-red-600 shadow-red-500/50' : 'bg-indigo-500 hover:bg-indigo-600 shadow-indigo-500/50'"
+            :class="voiceStore.isRecording ? 'bg-orange-500 hover:bg-orange-600 shadow-orange-500/50' : 'bg-indigo-500 hover:bg-indigo-600 shadow-indigo-500/50'"
           >
-            <span class="text-3xl">{{ voiceStore.isRecording ? '⏹' : '🎤' }}</span>
+            <span class="text-3xl">{{ voiceStore.isRecording ? '⏸' : '🎤' }}</span>
           </button>
+        </div>
+
+        <div class="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs text-gray-300 bg-black/30 border border-white/10 rounded-full px-3 py-1 pointer-events-none">
+          {{ voiceStore.isRecording ? '自动聆听已开启（VAD 自动收句）' : '自动聆听已暂停' }}
         </div>
 
         <!-- Dialogue History -->

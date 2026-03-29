@@ -10,11 +10,102 @@ from typing import Literal
 import httpx
 
 from .prompts import render_prompt
+from .runtime_config import get_runtime_config, get_scene_model, update_runtime_config
 from .settings import settings
 
 
 _LLM_MODEL_CACHE: str | None = None
 _LLM_MODEL_LOCK = asyncio.Lock()
+
+
+def _is_placeholder_model(model_id: str) -> bool:
+    low = (model_id or "").strip().lower()
+    return (not low) or low in {"local-model", "local-llm", "default"}
+
+
+def _score_llm_model(model_id: str) -> tuple[int, str] | None:
+    mid = (model_id or "").strip()
+    if not mid:
+        return None
+
+    low = mid.lower()
+    # 排除明显非聊天模型。
+    if any(k in low for k in ("embedding", "whisper", "cosyvoice", "tts", "asr", "rerank")):
+        return None
+
+    m = re.search(r"(\d+)\s*b\b", low)
+    size = int(m.group(1)) if m else 999
+
+    # 常见“视觉模型/思考模型”在本项目默认链路里优先级降低。
+    if "vl" in low:
+        size += 200
+    if "thinking" in low:
+        size += 300
+
+    return (size, mid)
+
+
+def _rank_models(model_ids: list[str]) -> list[str]:
+    scored: list[tuple[int, str]] = []
+    for item in model_ids:
+        s = _score_llm_model(item)
+        if s is not None:
+            scored.append(s)
+
+    if scored:
+        scored.sort(key=lambda x: x[0])
+        return [x[1] for x in scored]
+
+    # 如果都没命中评分规则，至少保留原始顺序里的非空值。
+    out: list[str] = []
+    for item in model_ids:
+        t = str(item or "").strip()
+        if t:
+            out.append(t)
+    return out
+
+
+async def list_available_llm_models() -> list[str]:
+    """从 OpenAI-compatible `/models` 拉取并过滤可用于对话的模型列表。"""
+
+    timeout = httpx.Timeout(min(float(settings.llm_timeout_seconds), 8.0), connect=2.0)
+    try:
+        async with httpx.AsyncClient(base_url=settings.llm_base_url, timeout=timeout) as client:
+            resp = await client.get(
+                "/models",
+                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
+        cfg = get_runtime_config()
+        cached = (((cfg.get("models") or {}).get("available") or []))
+        return [str(x).strip() for x in cached if isinstance(x, str) and str(x).strip()]
+
+    raw = data.get("data")
+    ids: list[str] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id")
+            if isinstance(model_id, str) and model_id.strip():
+                ids.append(model_id.strip())
+
+    ranked = _rank_models(ids)
+    current = get_runtime_config()
+    current_primary = str(((current.get("models") or {}).get("primary") or "")).strip()
+    primary = current_primary if current_primary in ranked else (ranked[0] if ranked else "")
+
+    update_runtime_config(
+        {
+            "models": {
+                "available": ranked,
+                "primary": primary,
+            }
+        }
+    )
+    return ranked
 
 
 def _extract_chat_response_text(data: Any) -> str:
@@ -60,7 +151,7 @@ def _extract_chat_response_text(data: Any) -> str:
     return ""
 
 
-async def _resolve_llm_model(client: httpx.AsyncClient) -> str:
+async def _resolve_llm_model(client: httpx.AsyncClient, *, scene: str = "chat") -> str:
     """Resolve a usable model id for OpenAI-compatible servers.
 
     Problem:
@@ -72,8 +163,20 @@ async def _resolve_llm_model(client: httpx.AsyncClient) -> str:
     - Otherwise, query /models and pick the first returned id (cached).
     """
 
+    # 1) 场景模型（运行时配置）优先。
+    scene_model = get_scene_model(scene)
+    if scene_model and (not _is_placeholder_model(scene_model)):
+        return scene_model
+
+    # 2) 主模型（运行时配置）次之。
+    cfg = get_runtime_config()
+    primary = str(((cfg.get("models") or {}).get("primary") or "")).strip()
+    if primary and (not _is_placeholder_model(primary)):
+        return primary
+
+    # 3) settings 默认模型（非占位）再次之。
     configured = str(getattr(settings, "llm_model", "") or "").strip()
-    if configured and configured != "local-model":
+    if configured and (not _is_placeholder_model(configured)):
         return configured
 
     global _LLM_MODEL_CACHE
@@ -85,61 +188,15 @@ async def _resolve_llm_model(client: httpx.AsyncClient) -> str:
             return _LLM_MODEL_CACHE
 
         try:
-            resp = await client.get(
-                "/models",
-                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            models = data.get("data")
-            if isinstance(models, list) and models:
-                def _score(model_id: str) -> tuple[int, str] | None:
-                    mid = (model_id or "").strip()
-                    if not mid:
-                        return None
-                    low = mid.lower()
-                    # Exclude non-chat models.
-                    if any(k in low for k in ("embedding", "whisper", "cosyvoice", "tts", "asr", "rerank")):
-                        return None
-                    # Prefer smaller parameter counts (e.g. 4b < 8b < 30b < 80b).
-                    m = re.search(r"(\d+)\s*b\b", low)
-                    size = int(m.group(1)) if m else 999
-                    # De-prioritize vision-language variants for simple vocab.
-                    if "vl" in low:
-                        size += 200
-                    # De-prioritize "thinking" variants that may hide output in reasoning_content.
-                    if "thinking" in low:
-                        size += 300
-                    return (size, mid)
-
-                best: tuple[int, str] | None = None
-                for item in models:
-                    if not isinstance(item, dict):
-                        continue
-                    mid = item.get("id")
-                    if not isinstance(mid, str):
-                        continue
-                    score = _score(mid)
-                    if score is None:
-                        continue
-                    if best is None or score < best:
-                        best = score
-
-                chosen = best[1] if best else None
-                if not chosen:
-                    # Fallback to first id.
-                    first = models[0]
-                    if isinstance(first, dict) and isinstance(first.get("id"), str):
-                        chosen = str(first["id"]).strip()
-
-                if chosen:
-                    _LLM_MODEL_CACHE = chosen
-                    return _LLM_MODEL_CACHE
+            models = await list_available_llm_models()
+            if models:
+                _LLM_MODEL_CACHE = models[0]
+                return _LLM_MODEL_CACHE
         except Exception:
             pass
 
     # Last resort: use whatever is configured.
-    return configured or "local-model"
+    return configured or primary or scene_model or "local-model"
 
 
 def _extract_vocab_from_text(text: str) -> dict[str, Any]:
@@ -377,7 +434,7 @@ async def generate_vocab_fields(term: str) -> dict[str, Any]:
 
     try:
         async with httpx.AsyncClient(base_url=settings.llm_base_url, timeout=timeout) as client:
-            model = await _resolve_llm_model(client)
+            model = await _resolve_llm_model(client, scene="vocab")
 
             async def _translate_example_to_zh(example_en: str) -> str:
                 ex = (example_en or "").strip()
@@ -573,7 +630,7 @@ async def generate_definition(term: str) -> str:
 
     try:
         async with httpx.AsyncClient(base_url=settings.llm_base_url, timeout=timeout) as client:
-            model = await _resolve_llm_model(client)
+            model = await _resolve_llm_model(client, scene="vocab")
             payload: dict[str, Any] = {
                 "model": model,
                 "messages": [
@@ -600,7 +657,33 @@ async def generate_definition(term: str) -> str:
     return "释义：暂无\n例句：暂无"
 
 
-async def chat_complete(*, system_prompt: str, user_text: str) -> str:
+def _build_chat_messages(
+    *,
+    system_prompt: str,
+    user_text: str,
+    history: list[dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+
+    if history:
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            content = str(item.get("content") or "").strip()
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content})
+
+    messages.append({"role": "user", "content": user_text})
+    return messages
+
+
+async def chat_complete(
+    *,
+    system_prompt: str,
+    user_text: str,
+    history: list[dict[str, str]] | None = None,
+) -> str:
     """Generate a single-turn chat completion using an explicit system prompt.
 
     Used by voice dialogue. Must be resilient: failures should degrade quickly.
@@ -616,13 +699,10 @@ async def chat_complete(*, system_prompt: str, user_text: str) -> str:
 
     try:
         async with httpx.AsyncClient(base_url=settings.llm_base_url, timeout=timeout) as client:
-            model = await _resolve_llm_model(client)
+            model = await _resolve_llm_model(client, scene="chat")
             payload: dict[str, Any] = {
                 "model": model,
-                "messages": [
-                    {"role": "system", "content": sp},
-                    {"role": "user", "content": ut},
-                ],
+                "messages": _build_chat_messages(system_prompt=sp, user_text=ut, history=history),
                 "temperature": 0.4,
             }
             resp = await client.post(
@@ -712,42 +792,21 @@ async def stream_definition(term: str) -> AsyncIterator[str]:
         "输出格式：\n释义：...\n例句：..."
     )
 
-    payload: dict[str, Any] = {
-        "model": settings.llm_model,
-        "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.2,
-        "stream": True,
-    }
-
-
-async def stream_chat(*, system_prompt: str, user_text: str) -> AsyncIterator[str]:
-    """Stream a single-turn chat completion with an explicit system prompt.
-
-    Yields incremental deltas; on failure yields nothing (caller should fall back).
-    """
-
-    sp = (system_prompt or "").strip() or "You are a helpful assistant."
-    ut = (user_text or "").strip()
-    if not ut:
-        return
-
-    payload: dict[str, Any] = {
-        "model": settings.llm_model,
-        "messages": [
-            {"role": "system", "content": sp},
-            {"role": "user", "content": ut},
-        ],
-        "temperature": 0.4,
-        "stream": True,
-    }
-
     timeout = httpx.Timeout(settings.llm_timeout_seconds)
 
     try:
         async with httpx.AsyncClient(base_url=settings.llm_base_url, timeout=timeout) as client:
+            model = await _resolve_llm_model(client, scene="vocab")
+            payload: dict[str, Any] = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.2,
+                "stream": True,
+            }
+
             async with client.stream(
                 "POST",
                 "/chat/completions",
@@ -772,10 +831,34 @@ async def stream_chat(*, system_prompt: str, user_text: str) -> AsyncIterator[st
     except Exception:
         return
 
+
+async def stream_chat(
+    *,
+    system_prompt: str,
+    user_text: str,
+    history: list[dict[str, str]] | None = None,
+) -> AsyncIterator[str]:
+    """Stream a single-turn chat completion with an explicit system prompt.
+
+    Yields incremental deltas; on failure yields nothing (caller should fall back).
+    """
+
+    sp = (system_prompt or "").strip() or "You are a helpful assistant."
+    ut = (user_text or "").strip()
+    if not ut:
+        return
+
     timeout = httpx.Timeout(settings.llm_timeout_seconds)
 
     try:
         async with httpx.AsyncClient(base_url=settings.llm_base_url, timeout=timeout) as client:
+            model = await _resolve_llm_model(client, scene="chat")
+            payload: dict[str, Any] = {
+                "model": model,
+                "messages": _build_chat_messages(system_prompt=sp, user_text=ut, history=history),
+                "temperature": 0.4,
+                "stream": True,
+            }
             async with client.stream(
                 "POST",
                 "/chat/completions",
@@ -941,7 +1024,7 @@ async def grade_essay(*, ocr_text: str, language: str) -> dict[str, Any]:
 
     try:
         async with httpx.AsyncClient(base_url=settings.llm_base_url, timeout=timeout) as client:
-            payload["model"] = await _resolve_llm_model(client)
+            payload["model"] = await _resolve_llm_model(client, scene="essay")
             resp = await client.post(
                 "/chat/completions",
                 headers={"Authorization": f"Bearer {settings.llm_api_key}"},

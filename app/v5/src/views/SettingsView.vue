@@ -6,7 +6,7 @@
  */
 
 import { ref, onMounted, watch } from 'vue';
-import { ConfigService, type AppConfig } from '../services/config';
+import { ConfigService, type AppConfig, type SystemConfig } from '../services/config';
 
 // --- 状态管理 ---
 
@@ -14,9 +14,15 @@ import { ConfigService, type AppConfig } from '../services/config';
 const settings = ref<AppConfig>({
   general: { theme: 'dark', language: 'zh-CN', autoUpdate: true },
   audio: { inputDevice: 'default', outputDevice: 'default', volume: 80 },
-  ai: { model: 'gpt-4-turbo', temperature: 0.7, voice: 'alloy' },
-  backend: { url: 'http://localhost:8011', wsUrl: 'localhost:8011' }
+  ai: { model: 'local-model', temperature: 0.7, voice: 'alloy' },
+  backend: { url: 'http://localhost:8012', wsUrl: 'localhost:8012' }
 });
+
+/** 后端返回的可用本地模型列表 */
+const availableModels = ref<string[]>([]);
+
+/** 后端系统配置快照 */
+const systemConfig = ref<SystemConfig | null>(null);
 
 /** 可用的音频输入设备列表 (麦克风) */
 const inputDevices = ref<MediaDeviceInfo[]>([]);
@@ -47,13 +53,28 @@ onMounted(async () => {
 
     // 兜底确保 backend 字段存在
     if (!settings.value.backend) {
-      settings.value.backend = { url: 'http://localhost:8011', wsUrl: 'localhost:8011' };
+      settings.value.backend = { url: 'http://localhost:8012', wsUrl: 'localhost:8012' };
     } else {
       settings.value.backend = {
-        url: settings.value.backend.url || 'http://localhost:8011',
-        wsUrl: settings.value.backend.wsUrl || 'localhost:8011'
+        url: settings.value.backend.url || 'http://localhost:8012',
+        wsUrl: settings.value.backend.wsUrl || 'localhost:8012'
       };
     }
+
+    // 拉取后端运行态配置（包含可用模型列表）
+    const sys = await ConfigService.getSystemConfig();
+    systemConfig.value = sys;
+    const backendModels = (sys?.models as any)?.available;
+    if (Array.isArray(backendModels)) {
+      availableModels.value = backendModels.filter((x) => typeof x === 'string' && x.trim());
+    }
+
+    // 使用“后端当前场景模型 -> 主模型 -> default”的优先级回填 UI。
+    const sceneChat = String((sys?.models as any)?.scene?.chat || '').trim();
+    const primary = String((sys?.models as any)?.primary || '').trim();
+    const fallback = String((sys?.models as any)?.default || '').trim();
+    const chosen = sceneChat || primary || fallback || settings.value.ai.model;
+    settings.value.ai.model = chosen;
 
     // 加载音频设备列表
     if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
@@ -77,6 +98,29 @@ onMounted(async () => {
 watch(settings, async (newSettings) => {
   await ConfigService.setConfig(newSettings);
 }, { deep: true });
+
+// 当用户切换“对话模型”时，实时同步到后端配置：
+// - 设为 primary
+// - 同步更新 chat 场景模型
+watch(
+  () => settings.value.ai.model,
+  async (model) => {
+    const val = String(model || '').trim();
+    if (!val) return;
+    try {
+      await ConfigService.updateSystemConfig({
+        models: {
+          primary: val,
+          scene: {
+            chat: val,
+          },
+        },
+      } as any);
+    } catch (e) {
+      console.warn('同步后端模型配置失败', e);
+    }
+  }
+);
 </script>
 
 <template>
@@ -178,11 +222,18 @@ watch(settings, async (newSettings) => {
             <div>
               <label class="block text-sm font-medium text-gray-400 mb-2">对话模型</label>
               <select v-model="settings.ai.model" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-                <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                <option value="qwen-max">通义千问 Max</option>
-                <option value="local-llm">本地 LLM (LM Studio)</option>
+                <option
+                  v-for="model in availableModels"
+                  :key="model"
+                  :value="model"
+                >
+                  {{ model }}
+                </option>
+                <option v-if="availableModels.length === 0" :value="settings.ai.model">
+                  {{ settings.ai.model || 'local-model' }}
+                </option>
               </select>
+              <div class="text-xs text-gray-500 mt-1">模型列表来自后端 /api/system/config 的可用本地模型探测结果</div>
             </div>
 
             <div>
@@ -224,7 +275,7 @@ watch(settings, async (newSettings) => {
               <input
                 v-model="settings.backend.url"
                 type="text"
-                placeholder="http://localhost:8011"
+                placeholder="http://localhost:8012"
                 class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               />
               <div class="text-xs text-gray-500 mt-1">用于登录、系统配置、提示词等 HTTP 接口</div>
@@ -235,10 +286,10 @@ watch(settings, async (newSettings) => {
               <input
                 v-model="settings.backend.wsUrl"
                 type="text"
-                placeholder="localhost:8011"
+                placeholder="localhost:8012"
                 class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               />
-              <div class="text-xs text-gray-500 mt-1">用于 ws-v1：例如 localhost:8011（无需写 ws://）</div>
+              <div class="text-xs text-gray-500 mt-1">用于 ws-v1：例如 localhost:8012（无需写 ws://）</div>
             </div>
           </div>
         </div>

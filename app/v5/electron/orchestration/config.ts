@@ -33,7 +33,7 @@ export const defaultOrchestratorConfig: OrchestratorConfig = {
     ocr: {
       name: 'ocr',
       type: 'http',
-      endpoint: 'http://localhost:8011',
+      endpoint: 'http://localhost:8012',
       healthCheck: '/health',
       healthCheckInterval: 30000,
       priority: 90,

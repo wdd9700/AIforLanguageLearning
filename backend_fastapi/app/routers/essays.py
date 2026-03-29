@@ -11,6 +11,7 @@ from sqlmodel import Session, col, select
 from ..db import get_session
 from ..llm import grade_essay
 from ..models import ConversationEvent, EssayResult, EssaySubmission
+from ..ocr import ocr_image_base64
 
 router = APIRouter(prefix="/v1/essays", tags=["essays"])
 
@@ -41,6 +42,14 @@ class EssayGetResponse(BaseModel):
     language: str
     score: int | None
     result: dict[str, Any]
+
+
+class EssayGradeOcrRequest(BaseModel):
+    image: str
+    language: str = "english"
+    session_id: str = "anonymous"
+    conversation_id: str | None = None
+    request_id: str | None = None
 
 
 def _append_event(
@@ -75,16 +84,15 @@ def _append_event(
     return next_seq
 
 
-@router.post("/grade", response_model=EssayGradeResponse)
-async def grade(req: EssayGradeRequest, session: Session = Depends(get_session)) -> EssayGradeResponse:
-    ocr_text = (req.ocr_text or "").strip()
-    if not ocr_text:
-        raise HTTPException(status_code=400, detail="ocr_text is required")
-
-    session_id = (req.session_id or "anonymous").strip() or "anonymous"
-    conversation_id = (req.conversation_id or f"conv_{uuid.uuid4().hex[:8]}").strip()
-    request_id = (req.request_id or f"req_{uuid.uuid4().hex[:10]}").strip()
-    language = (req.language or "").strip() or "en"
+async def _grade_and_persist(
+    *,
+    ocr_text: str,
+    language: str,
+    session_id: str,
+    conversation_id: str,
+    request_id: str,
+    session: Session,
+) -> EssayGradeResponse:
     ts = int(time.time() * 1000)
 
     submission = EssaySubmission(
@@ -155,6 +163,48 @@ async def grade(req: EssayGradeRequest, session: Session = Depends(get_session))
         request_id=request_id,
         score=score,
         result=result,
+    )
+
+
+@router.post("/grade", response_model=EssayGradeResponse)
+async def grade(req: EssayGradeRequest, session: Session = Depends(get_session)) -> EssayGradeResponse:
+    ocr_text = (req.ocr_text or "").strip()
+    if not ocr_text:
+        raise HTTPException(status_code=400, detail="ocr_text is required")
+
+    session_id = (req.session_id or "anonymous").strip() or "anonymous"
+    conversation_id = (req.conversation_id or f"conv_{uuid.uuid4().hex[:8]}").strip()
+    request_id = (req.request_id or f"req_{uuid.uuid4().hex[:10]}").strip()
+    language = (req.language or "").strip() or "en"
+    return await _grade_and_persist(
+        ocr_text=ocr_text,
+        language=language,
+        session_id=session_id,
+        conversation_id=conversation_id,
+        request_id=request_id,
+        session=session,
+    )
+
+
+@router.post("/grade-ocr", response_model=EssayGradeResponse)
+async def grade_ocr(req: EssayGradeOcrRequest, session: Session = Depends(get_session)) -> EssayGradeResponse:
+    text = ocr_image_base64(req.image, language=req.language)
+    text = str(text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="ocr failed or empty text")
+
+    session_id = (req.session_id or "anonymous").strip() or "anonymous"
+    conversation_id = (req.conversation_id or f"conv_{uuid.uuid4().hex[:8]}").strip()
+    request_id = (req.request_id or f"req_{uuid.uuid4().hex[:10]}").strip()
+    language = (req.language or "").strip() or "english"
+
+    return await _grade_and_persist(
+        ocr_text=text,
+        language=language,
+        session_id=session_id,
+        conversation_id=conversation_id,
+        request_id=request_id,
+        session=session,
     )
 
 

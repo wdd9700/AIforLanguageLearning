@@ -11,6 +11,10 @@ class Settings(BaseSettings):
         default="development", validation_alias=AliasChoices("AIFL_APP_ENV", "APP_ENV")
     )
     port: int = Field(default=8012, validation_alias=AliasChoices("AIFL_PORT", "PORT"))
+    enable_legacy_compat_api: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("AIFL_ENABLE_LEGACY_COMPAT_API", "ENABLE_LEGACY_COMPAT_API"),
+    )
 
     # LM Studio (OpenAI compatible)
     llm_base_url: str = Field(
@@ -58,16 +62,16 @@ class Settings(BaseSettings):
     voice_request_idle_seconds: int = 30
 
     # Voice VAD（P1）：停顿判定，支持“无需客户端发送 AUDIO_END 也能自动收句”。
-    enable_vad: bool = Field(default=False, validation_alias=AliasChoices("AIFL_ENABLE_VAD", "ENABLE_VAD"))
+    enable_vad: bool = Field(default=True, validation_alias=AliasChoices("AIFL_ENABLE_VAD", "ENABLE_VAD"))
     vad_mode: int = Field(default=2, validation_alias=AliasChoices("AIFL_VAD_MODE", "VAD_MODE"))
     vad_silence_ms: int = Field(
         default=800,
         validation_alias=AliasChoices("AIFL_VAD_SILENCE_MS", "VAD_SILENCE_MS"),
     )
 
-    # TTS（P1）：默认占位静音 wav；生产可切到 XTTS。
+    # TTS（P1）：默认使用 XTTS；若依赖/模型不可用，代码层会自动回退到静音 wav。
     tts_backend: str = Field(
-        default="silence",
+        default="xtts",
         validation_alias=AliasChoices("AIFL_TTS_BACKEND", "TTS_BACKEND"),
     )
     tts_chunk_size_bytes: int = Field(

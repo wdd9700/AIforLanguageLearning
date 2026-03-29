@@ -6,6 +6,31 @@ import { WindowManager } from './window-manager.js';
 import { ServiceProbeManager } from './service-probe-manager.js';
 import { Config, SKey } from '../types.js';
 
+function normalizeBackendConfig(input: { url?: string; wsUrl?: string }) {
+    const rawUrl = String(input?.url || '').trim();
+    let url = rawUrl;
+    if (url && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
+        url = `http://${url}`;
+    }
+    url = url.replace(/\/$/, '');
+    url = url.replace('http://localhost:8011', 'http://localhost:8012');
+    url = url.replace('http://127.0.0.1:8011', 'http://127.0.0.1:8012');
+    url = url.replace('http://localhost:8000', 'http://localhost:8012');
+    url = url.replace('http://127.0.0.1:8000', 'http://127.0.0.1:8012');
+
+    const rawWs = String(input?.wsUrl || '').trim();
+    let wsUrl = rawWs.replace(/^wss?:\/\//, '');
+    wsUrl = wsUrl.replace('localhost:8011', 'localhost:8012');
+    wsUrl = wsUrl.replace('127.0.0.1:8011', '127.0.0.1:8012');
+    wsUrl = wsUrl.replace('localhost:8000', 'localhost:8012');
+    wsUrl = wsUrl.replace('127.0.0.1:8000', '127.0.0.1:8012');
+
+    return {
+        url: url || 'http://localhost:8012',
+        wsUrl: wsUrl || 'localhost:8012',
+    };
+}
+
 export class IpcManager {
     private store: Store<Config>;
     private windowManager: WindowManager;
@@ -21,12 +46,16 @@ export class IpcManager {
         ipcMain.handle('config:get', () => {
             const ports = this.store.get('ports') ?? { lmstudio: null, whisper: null, surya: null, cosy: null, app: 0 };
             const legacyTheme = this.store.get('theme') ?? 'system';
-            const legacyBackendUrl = this.store.get('backendUrl') ?? 'localhost:8011';
+            const legacyBackendUrl = this.store.get('backendUrl') ?? 'localhost:8012';
 
             const general = this.store.get('general') ?? { theme: legacyTheme, language: 'zh-CN', autoUpdate: true };
             const audio = this.store.get('audio') ?? { inputDevice: 'default', outputDevice: 'default', volume: 80 };
-            const ai = this.store.get('ai') ?? { model: 'gpt-4-turbo', temperature: 0.7, voice: 'alloy' };
-            const backend = this.store.get('backend') ?? { url: 'http://localhost:8011', wsUrl: legacyBackendUrl };
+            const ai = this.store.get('ai') ?? { model: 'local-model', temperature: 0.7, voice: 'alloy' };
+            const backendRaw = this.store.get('backend') ?? { url: 'http://localhost:8012', wsUrl: legacyBackendUrl };
+            const backend = normalizeBackendConfig(backendRaw);
+
+            this.store.set('backend', backend);
+            this.store.set('backendUrl', backend.wsUrl);
 
             // 返回给渲染进程的对象尽量对齐 AppConfig 结构；保留 ports 以兼容可能的使用方。
             return {
@@ -66,16 +95,16 @@ export class IpcManager {
                 this.store.set('audio', { ...current, ...(patch as any).audio });
             }
             if ((patch as any)?.ai) {
-                const current = this.store.get('ai') ?? { model: 'gpt-4-turbo', temperature: 0.7, voice: 'alloy' };
+                const current = this.store.get('ai') ?? { model: 'local-model', temperature: 0.7, voice: 'alloy' };
                 this.store.set('ai', { ...current, ...(patch as any).ai });
             }
             if ((patch as any)?.backend) {
-                const current = this.store.get('backend') ?? { url: 'http://localhost:8011', wsUrl: 'localhost:8011' };
-                this.store.set('backend', { ...current, ...(patch as any).backend });
+                const current = this.store.get('backend') ?? { url: 'http://localhost:8012', wsUrl: 'localhost:8012' };
+                const merged = { ...current, ...(patch as any).backend };
+                const normalized = normalizeBackendConfig(merged);
+                this.store.set('backend', normalized);
                 // 同步 legacy backendUrl
-                if ((patch as any).backend?.wsUrl) {
-                    this.store.set('backendUrl', (patch as any).backend.wsUrl);
-                }
+                this.store.set('backendUrl', normalized.wsUrl);
             }
 
             return {

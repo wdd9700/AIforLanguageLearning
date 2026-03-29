@@ -10,11 +10,16 @@ from app.db import init_db, override_engine_for_tests
 from app.main import app
 
 
-def test_ws_voice_audio_min_flow(tmp_path: Path) -> None:
+def test_ws_voice_audio_min_flow(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "test.db"
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     override_engine_for_tests(engine)
     init_db()
+
+    async def fake_stream_chat(*, system_prompt: str, user_text: str, history=None):
+        yield "ok"
+
+    monkeypatch.setattr("app.main.stream_chat", fake_stream_chat)
 
     client = TestClient(app)
     with client.websocket_connect("/ws/v1?session_id=test&conversation_id=conv_voice") as ws:

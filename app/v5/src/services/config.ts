@@ -26,7 +26,7 @@ export interface AppConfig {
     inputDevice: string;
     /** 输出设备 ID (扬声器) */
     outputDevice: string;
-    /** 系统音量 (0.0 - 1.0) */
+    /** 系统音量百分比 (0 - 100) */
     volume: number;
   };
   /** AI 模型与语音参数设置 */
@@ -53,11 +53,46 @@ export interface AppConfig {
 export interface SystemConfig {
   port: number;
   llmEndpoint: string;
-  models: any;
+  models: {
+    default: string;
+    primary?: string;
+    available?: string[];
+    scene?: {
+      chat?: string;
+      vocab?: string;
+      essay?: string;
+    };
+  };
   prompts: any;
   ocr: any;
   tts: any;
   asr: any;
+}
+
+function normalizeConfig(cfg: AppConfig): AppConfig {
+  const next = { ...cfg, backend: { ...cfg.backend } }
+
+  const rawUrl = String(next.backend?.url || '').trim()
+  let url = rawUrl
+  if (url && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
+    url = `http://${url}`
+  }
+  url = url.replace(/\/$/, '')
+  url = url.replace('http://localhost:8011', 'http://localhost:8012')
+  url = url.replace('http://127.0.0.1:8011', 'http://127.0.0.1:8012')
+  url = url.replace('http://localhost:8000', 'http://localhost:8012')
+  url = url.replace('http://127.0.0.1:8000', 'http://127.0.0.1:8012')
+  next.backend.url = url
+
+  const rawWs = String(next.backend?.wsUrl || '').trim()
+  let wsUrl = rawWs.replace(/^wss?:\/\//, '')
+  wsUrl = wsUrl.replace('localhost:8011', 'localhost:8012')
+  wsUrl = wsUrl.replace('127.0.0.1:8011', '127.0.0.1:8012')
+  wsUrl = wsUrl.replace('localhost:8000', 'localhost:8012')
+  wsUrl = wsUrl.replace('127.0.0.1:8000', '127.0.0.1:8012')
+  next.backend.wsUrl = wsUrl
+
+  return next
 }
 
 export const ConfigService = {
@@ -90,38 +125,8 @@ export const ConfigService = {
     const defaults: AppConfig = {
       general: { theme: 'dark', language: 'zh-CN', autoUpdate: true },
       audio: { inputDevice: 'default', outputDevice: 'default', volume: 80 },
-      ai: { model: 'gpt-4-turbo', temperature: 0.7, voice: 'alloy' },
+      ai: { model: 'local-model', temperature: 0.7, voice: 'alloy' },
       backend: { url: 'http://localhost:8012', wsUrl: 'localhost:8012' }
-    };
-
-    const normalize = (cfg: AppConfig): AppConfig => {
-      const next = { ...cfg, backend: { ...cfg.backend } };
-
-      // Normalize backend.url
-      const rawUrl = String(next.backend?.url || '').trim();
-      let url = rawUrl;
-      if (url && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
-        url = `http://${url}`;
-      }
-      url = url.replace(/\/$/, '');
-      url = url.replace('http://localhost:8011', 'http://localhost:8012');
-      url = url.replace('http://127.0.0.1:8011', 'http://127.0.0.1:8012');
-      // Common misconfig: pointing backend to the Vite dev server port.
-      url = url.replace('http://localhost:8000', 'http://localhost:8012');
-      url = url.replace('http://127.0.0.1:8000', 'http://127.0.0.1:8012');
-      next.backend.url = url;
-
-      // Normalize backend.wsUrl (host:port)
-      const rawWs = String(next.backend?.wsUrl || '').trim();
-      let wsUrl = rawWs.replace(/^wss?:\/\//, '');
-      wsUrl = wsUrl.replace('localhost:8011', 'localhost:8012');
-      wsUrl = wsUrl.replace('127.0.0.1:8011', '127.0.0.1:8012');
-      // Common misconfig: pointing wsUrl to the Vite dev server port.
-      wsUrl = wsUrl.replace('localhost:8000', 'localhost:8012');
-      wsUrl = wsUrl.replace('127.0.0.1:8000', '127.0.0.1:8012');
-      next.backend.wsUrl = wsUrl;
-
-      return next;
     };
 
     // 本地缓存（用于 api.ts 动态 baseURL 等）
@@ -138,7 +143,7 @@ export const ConfigService = {
       try {
         const ipcCfg = await window.api.getConfig();
         // 允许 IPC 只返回部分字段；这里与 defaults/localStorage 做合并。
-        const merged = normalize(this.mergeConfig(this.mergeConfig(defaults, storedConfig ?? {}), ipcCfg ?? {}));
+        const merged = normalizeConfig(this.mergeConfig(this.mergeConfig(defaults, storedConfig ?? {}), ipcCfg ?? {}));
         localStorage.setItem('app_config', JSON.stringify(merged));
         return merged;
       } catch (e) {
@@ -148,25 +153,26 @@ export const ConfigService = {
     
     // 2. 回退方案：读取 LocalStorage
     if (storedConfig) {
-      const merged = normalize(this.mergeConfig(defaults, storedConfig));
+      const merged = normalizeConfig(this.mergeConfig(defaults, storedConfig));
       localStorage.setItem('app_config', JSON.stringify(merged));
       return merged;
     }
 
-    const normalizedDefaults = normalize(defaults);
+    const normalizedDefaults = normalizeConfig(defaults);
     localStorage.setItem('app_config', JSON.stringify(normalizedDefaults));
     return normalizedDefaults;
   },
 
   async setConfig(config: AppConfig): Promise<void> {
+    const normalized = normalizeConfig(config);
     if (window.api && window.api.setConfig) {
       try {
-        await window.api.setConfig(config);
+        await window.api.setConfig(normalized);
       } catch (e) {
         console.warn('Failed to set config in main process', e);
       }
     }
-    localStorage.setItem('app_config', JSON.stringify(config));
+    localStorage.setItem('app_config', JSON.stringify(normalized));
   },
 
   async getSystemConfig(): Promise<SystemConfig> {
