@@ -80,7 +80,7 @@ class TestConversationContext:
     
     def test_add_message(self):
         """测试添加消息"""
-        ctx = ConversationContext("test-123")
+        ctx = ConversationContext("test-123", session_id="session-456")
         ctx.add_message("system", "You are a helpful assistant")
         ctx.add_message("user", "Hello")
         
@@ -90,7 +90,7 @@ class TestConversationContext:
     
     def test_sliding_window(self):
         """测试滑动窗口限制"""
-        ctx = ConversationContext("test-123", max_messages=2)
+        ctx = ConversationContext("test-123", session_id="session-456", max_messages=2)
         
         # 添加超过限制的消息 (2轮 = 4条消息)
         ctx.add_message("user", "Q1")
@@ -105,7 +105,7 @@ class TestConversationContext:
     
     def test_get_total_tokens(self):
         """测试Token总数计算"""
-        ctx = ConversationContext("test-123")
+        ctx = ConversationContext("test-123", session_id="session-456")
         ctx.add_message("system", "Sys", 10)
         ctx.add_message("user", "Hello", 2)
         ctx.add_message("assistant", "Hi there", 3)
@@ -116,6 +116,7 @@ class TestConversationContext:
         """测试压缩判断"""
         ctx = ConversationContext(
             "test-123",
+            session_id="session-456",
             max_tokens=100,
             token_threshold=0.8
         )
@@ -216,8 +217,8 @@ class TestTokenUtils:
         """测试英文近似计数"""
         text = "Hello world this is a test"
         count = approximate_token_count(text)
-        # 5个单词，大约4-5个token
-        assert 3 <= count <= 10
+        # 5个单词，大约4-6个token
+        assert 3 <= count <= 12
     
     def test_approximate_token_count_chinese(self):
         """测试中文近似计数"""

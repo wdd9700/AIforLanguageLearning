@@ -1,0 +1,112 @@
+"""Elasticsearch 异步客户端封装"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from elasticsearch import AsyncElasticsearch
+
+logger = logging.getLogger(__name__)
+
+INDEX_NAME = "aifl_vocabulary"
+
+MAPPINGS: dict[str, Any] = {
+    "properties": {
+        "word": {
+            "type": "text",
+            "analyzer": "standard",
+            "fields": {"keyword": {"type": "keyword"}},
+        },
+        "definition": {"type": "text"},
+        "language": {"type": "keyword"},
+        "tags": {"type": "keyword"},
+    }
+}
+
+
+class ESClient:
+    """Elasticsearch 客户端管理器"""
+
+    def __init__(self, hosts: list[str] | None = None):
+        self.hosts = hosts or ["http://localhost:9200"]
+        self._client: AsyncElasticsearch | None = None
+
+    async def connect(self) -> AsyncElasticsearch:
+        if self._client is None:
+            self._client = AsyncElasticsearch(self.hosts)
+        return self._client
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
+
+    @property
+    def client(self) -> AsyncElasticsearch | None:
+        return self._client
+
+
+_es_client: ESClient | None = None
+
+
+def get_es_client() -> ESClient:
+    global _es_client
+    if _es_client is None:
+        _es_client = ESClient()
+    return _es_client
+
+
+async def ensure_index(client: AsyncElasticsearch | None = None) -> bool:
+    """检查并创建 vocabulary 索引"""
+    if client is None:
+        client = (await get_es_client().connect())
+    try:
+        exists = await client.indices.exists(index=INDEX_NAME)
+        if not exists:
+            await client.indices.create(index=INDEX_NAME, mappings=MAPPINGS)
+            logger.info(f"Created ES index: {INDEX_NAME}")
+        return True
+    except Exception as e:
+        logger.error(f"ES ensure_index error: {e}")
+        return False
+
+
+async def index_document(
+    doc: dict[str, Any],
+    doc_id: str | None = None,
+    client: AsyncElasticsearch | None = None,
+) -> bool:
+    """索引单个文档"""
+    if client is None:
+        client = (await get_es_client().connect())
+    try:
+        await client.index(index=INDEX_NAME, id=doc_id, document=doc)
+        return True
+    except Exception as e:
+        logger.error(f"ES index_document error: {e}")
+        return False
+
+
+async def search_vocabulary(
+    query: str,
+    fuzzy: bool = True,
+    size: int = 20,
+    client: AsyncElasticsearch | None = None,
+) -> list[dict[str, Any]]:
+    """词汇全文搜索"""
+    if client is None:
+        client = (await get_es_client().connect())
+    try:
+        q: dict[str, Any] = {
+            "multi_match": {
+                "query": query,
+                "fields": ["word^3", "definition", "tags"],
+                "fuzziness": "AUTO" if fuzzy else "0",
+            }
+        }
+        resp = await client.search(index=INDEX_NAME, query=q, size=size)
+        return [hit["_source"] for hit in resp["hits"]["hits"]]
+    except Exception as e:
+        logger.error(f"ES search_vocabulary error: {e}")
+        return []

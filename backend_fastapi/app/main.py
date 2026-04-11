@@ -12,19 +12,31 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, col, select
 
-from .db import init_db
-from .db import get_engine
-from .llm import chat_complete, generate_definition, grade_essay, stream_chat, stream_definition
+from .db import get_engine, init_db
+from .domain import models as _domain_models  # noqa: F401  # registers new tables
+from .infrastructure.telemetry.metrics import get_metrics_collector, get_metrics_response
+from .infrastructure.telemetry.tracing import TraceMiddleware, get_request_id, get_trace_id
+from .interfaces.admin_router import router as admin_router
+from .interfaces.auth_router import router as auth_router
+from .interfaces.knowledge_graph_router import router as knowledge_graph_router
+from .interfaces.storage_router import router as storage_router
+from .interfaces.tasks_router import router as tasks_router
+from .llm import chat_complete, generate_definition, grade_essay, stream_chat
 from .logging import configure_logging
-from .models import ConversationEvent, EssayResult, EssaySubmission, PublicVocabEntry, UserVocabQuery
-from .routers.auth import router as auth_router
+from .models import (
+    ConversationEvent,
+    EssayResult,
+    EssaySubmission,
+    PublicVocabEntry,
+    UserVocabQuery,
+)
 from .routers.compat_legacy import router as compat_legacy_router
 from .routers.essays import router as essays_router
 from .routers.learning import router as learning_router
 from .routers.model_routing import router as model_routing_router
 from .routers.system import router as system_router
-from .routers.voice import router as voice_router
 from .routers.vocab import router as vocab_router
+from .routers.voice import router as voice_router
 from .settings import settings
 from .tts import synthesize_tts_wav
 from .voice_stream import (
@@ -33,7 +45,6 @@ from .voice_stream import (
     try_create_faster_whisper_transcriber,
     try_create_openai_whisper_transcriber,
 )
-
 
 configure_logging()
 
@@ -75,16 +86,45 @@ app.include_router(vocab_router)
 app.include_router(essays_router)
 app.include_router(voice_router)
 app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(system_router)
 app.include_router(learning_router)
 app.include_router(model_routing_router)
+app.include_router(knowledge_graph_router)
+app.include_router(storage_router)
+app.include_router(tasks_router)
 if bool(getattr(settings, "enable_legacy_compat_api", True)):
     app.include_router(compat_legacy_router)
+
+
+async def telemetry_middleware(request, call_next):
+    tracer = TraceMiddleware()
+    await tracer.process_request(request)
+    start = time.time()
+    response = await call_next(request)
+    duration_ms = (time.time() - start) * 1000
+    metrics = get_metrics_collector()
+    metrics.increment_request_count(request.method, request.url.path, response.status_code)
+    metrics.observe_request_latency(request.method, request.url.path, duration_ms)
+    response.headers["X-Trace-Id"] = get_trace_id()
+    response.headers["X-Request-Id"] = get_request_id()
+    return response
+
+
+app.middleware("http")(telemetry_middleware)
 
 
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True, "env": settings.app_env}
+
+
+@app.get("/metrics")
+async def metrics():
+    from fastapi.responses import Response
+
+    data, content_type = get_metrics_response()
+    return Response(content=data, media_type=content_type)
 
 
 @app.websocket("/ws/v1")

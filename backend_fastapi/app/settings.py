@@ -39,6 +39,45 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AIFL_DATABASE_URL", "DATABASE_URL"),
     )
 
+    jwt_secret: str = Field(
+        default="your-super-secret-key-change-this-in-production",
+        validation_alias=AliasChoices("AIFL_JWT_SECRET", "JWT_SECRET"),
+    )
+
+    # Infrastructure
+    redis_url: str = Field(
+        default="redis://localhost:6379/0",
+        validation_alias=AliasChoices("AIFL_REDIS_URL", "REDIS_URL"),
+    )
+    es_url: str = Field(
+        default="http://localhost:9200",
+        validation_alias=AliasChoices("AIFL_ES_URL", "ES_URL"),
+    )
+    neo4j_url: str = Field(
+        default="bolt://localhost:7687",
+        validation_alias=AliasChoices("AIFL_NEO4J_URL", "NEO4J_URL"),
+    )
+    neo4j_user: str = Field(
+        default="neo4j",
+        validation_alias=AliasChoices("AIFL_NEO4J_USER", "NEO4J_USER"),
+    )
+    neo4j_password: str = Field(
+        default="password",
+        validation_alias=AliasChoices("AIFL_NEO4J_PASSWORD", "NEO4J_PASSWORD"),
+    )
+    minio_endpoint: str = Field(
+        default="localhost:9000",
+        validation_alias=AliasChoices("AIFL_MINIO_ENDPOINT", "MINIO_ENDPOINT"),
+    )
+    minio_access_key: str = Field(
+        default="minioadmin",
+        validation_alias=AliasChoices("AIFL_MINIO_ACCESS_KEY", "MINIO_ACCESS_KEY"),
+    )
+    minio_secret_key: str = Field(
+        default="minioadmin",
+        validation_alias=AliasChoices("AIFL_MINIO_SECRET_KEY", "MINIO_SECRET_KEY"),
+    )
+
     # Voice (P0): 默认开启；若运行环境缺少 ASR 依赖，会降级为“ASR 后端不可用”的提示文本。
     enable_asr: bool = Field(
         default=True, validation_alias=AliasChoices("AIFL_ENABLE_ASR", "ENABLE_ASR")

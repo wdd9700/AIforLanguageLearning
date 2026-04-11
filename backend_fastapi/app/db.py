@@ -1,26 +1,39 @@
 from __future__ import annotations
 
-from typing import Generator, Optional
+from typing import AsyncGenerator, Generator
 
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel, Session, create_engine
+from sqlmodel import Session, SQLModel, create_engine
 
+from . import models as _app_models  # noqa: F401
+
+# Import domain models to ensure all tables are registered in SQLModel metadata
+from .domain import models as _domain_models  # noqa: F401
 from .settings import settings
 
-
 _engine = None
+_async_engine = None
 
 
 def _create_sqlite_engine(database_url: str):
     connect_args = {"check_same_thread": False}
 
-    # 说明：
-    # - sqlite:///:memory: 在多连接场景会丢数据；测试里可用 StaticPool 保持同一连接
-    # - 文件型 sqlite 不需要 StaticPool
     if database_url.endswith(":memory:"):
         return create_engine(database_url, connect_args=connect_args, poolclass=StaticPool)
 
     return create_engine(database_url, connect_args=connect_args)
+
+
+def _to_async_url(url: str) -> str:
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql+asyncpg://"):
+        return url
+    if url.startswith("sqlite"):
+        return url
+    return url
 
 
 def get_engine():
@@ -30,9 +43,35 @@ def get_engine():
     return _engine
 
 
+def get_async_engine():
+    global _async_engine
+    if _async_engine is None:
+        url = _to_async_url(settings.database_url)
+        if url.startswith("sqlite"):
+            connect_args = {"check_same_thread": False}
+            _async_engine = create_async_engine(
+                url, connect_args=connect_args, poolclass=StaticPool
+            )
+        else:
+            _async_engine = create_async_engine(
+                url,
+                echo=False,
+                pool_size=10,
+                max_overflow=20,
+                pool_timeout=30,
+                pool_recycle=1800,
+            )
+    return _async_engine
+
+
 def override_engine_for_tests(engine) -> None:
     global _engine
     _engine = engine
+
+
+def override_async_engine_for_tests(engine) -> None:
+    global _async_engine
+    _async_engine = engine
 
 
 def init_db() -> None:
@@ -40,6 +79,25 @@ def init_db() -> None:
     SQLModel.metadata.create_all(engine)
 
 
+async def init_db_async() -> None:
+    engine = get_async_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+
+
 def get_session() -> Generator[Session, None, None]:
     with Session(get_engine()) as session:
+        yield session
+
+
+AsyncSessionLocal = None
+
+
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    global AsyncSessionLocal
+    if AsyncSessionLocal is None:
+        AsyncSessionLocal = sessionmaker(
+            get_async_engine(), class_=AsyncSession, expire_on_commit=False
+        )
+    async with AsyncSessionLocal() as session:
         yield session

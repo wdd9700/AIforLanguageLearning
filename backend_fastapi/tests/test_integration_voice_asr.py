@@ -7,7 +7,9 @@ import time
 from pathlib import Path
 
 import pytest
-import soundfile as sf
+
+sf = pytest.importorskip("soundfile")
+pytest.importorskip("librosa")
 from fastapi.testclient import TestClient
 
 

@@ -6,6 +6,10 @@ requires-python = ">=3.10"
 readme = "README.md"
 license = { text = "MIT" }
 
+[tool.setuptools]
+packages = ["app"]
+include-package-data = false
+
 dependencies = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.27",
@@ -25,6 +29,8 @@ dev = [
   "pytest-asyncio>=0.23",
   "pytest-timeout>=2.3",
   "ruff>=0.6",
+  "soundfile>=0.12",
+  "librosa>=0.10",
 ]
 
 [tool.pytest.ini_options]

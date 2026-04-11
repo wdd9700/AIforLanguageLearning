@@ -1,0 +1,95 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aifl_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aifl_user
+      POSTGRES_PASSWORD: aifl_password
+      POSTGRES_DB: aifl_db
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aifl_user -d aifl_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - aifl_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: aifl_redis
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - aifl_network
+
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    container_name: aifl_elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      - TZ=Asia/Shanghai
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - aifl_network
+
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: aifl_neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/password
+      TZ: Asia/Shanghai
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - aifl_network
+
+volumes:
+  postgres_data:
+  redis_data:
+  elasticsearch_data:
+  neo4j_data:
+  neo4j_logs:
+
+networks:
+  aifl_network:
+    driver: bridge
