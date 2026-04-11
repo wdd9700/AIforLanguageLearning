@@ -21,6 +21,7 @@ from .routers.auth import router as auth_router
 from .routers.compat_legacy import router as compat_legacy_router
 from .routers.essays import router as essays_router
 from .routers.learning import router as learning_router
+from .routers.model_routing import router as model_routing_router
 from .routers.system import router as system_router
 from .routers.voice import router as voice_router
 from .routers.vocab import router as vocab_router
@@ -76,6 +77,7 @@ app.include_router(voice_router)
 app.include_router(auth_router)
 app.include_router(system_router)
 app.include_router(learning_router)
+app.include_router(model_routing_router)
 if bool(getattr(settings, "enable_legacy_compat_api", True)):
     app.include_router(compat_legacy_router)
 
